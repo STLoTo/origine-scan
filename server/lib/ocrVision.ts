@@ -4,6 +4,7 @@ import {
   isInfomaniakConfigured,
   type ChatContentPart,
 } from "./infomaniakClient";
+import { extractBarcode, inferHintsFromRawText } from "./ocrHints";
 import type { OcrExtraction } from "../types/evidence";
 
 export { checkInfomaniakVisionAvailable } from "./infomaniakClient";
@@ -15,12 +16,6 @@ const VISION_PROMPT =
   "Mantieni l'ordine e le righe originali. " +
   "Restituisci SOLO il testo trascritto, senza commenti né markdown.";
 
-function extractBarcode(text: string): string | undefined {
-  const matches = text.match(/\b(\d{8}|\d{12,14})\b/g);
-  if (!matches) return undefined;
-  return matches.find((m) => m.length === 13) ?? matches[matches.length - 1];
-}
-
 function extractField(text: string, patterns: RegExp[]): string | undefined {
   for (const re of patterns) {
     const m = text.match(re);
@@ -29,12 +24,9 @@ function extractField(text: string, patterns: RegExp[]): string | undefined {
   return undefined;
 }
 
-/** Estrae metadati dal testo OCR grezzo (post-processing locale) */
 function enrichFromRawText(rawText: string): Partial<OcrExtraction> {
+  const hints = inferHintsFromRawText(rawText);
   const lower = rawText.toLowerCase();
-  const productName = extractField(rawText, [
-    /(?:^|\n)([A-ZÀ-Ü][A-Za-zÀ-ü0-9\s'&.-]{2,60})(?:\n|$)/,
-  ]);
 
   const ingredients = extractField(rawText, [
     /ingredienti\s*:?\s*([\s\S]{10,800}?)(?:\n\n|\n(?:allergeni|contiene|conservare|netto)|$)/i,
@@ -54,7 +46,8 @@ function enrichFromRawText(rawText: string): Partial<OcrExtraction> {
 
   return {
     rawText,
-    productName,
+    productName: hints.productName,
+    brand: hints.brand,
     ingredients,
     labelClaims,
     originClaims,

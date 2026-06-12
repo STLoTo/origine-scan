@@ -3,6 +3,7 @@ import multer from "multer";
 import { buildProductEvidence } from "../core/evidenceBuilder";
 import { analyzeWithAi, checkInfomaniakLlmAvailable } from "../lib/llm";
 import { checkInfomaniakVisionAvailable, extractTextFromImage } from "../lib/ocrVision";
+import { describeProductFromImages, maxProductImages } from "../lib/productVision";
 import { isInfomaniakConfigured } from "../lib/infomaniakClient";
 import { checkDatabasesReachability } from "../lib/databaseHealth";
 import { serverConfig } from "../config";
@@ -12,6 +13,11 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 12 * 1024 * 1024 },
 });
+
+const analyzeUpload = upload.fields([
+  { name: "image", maxCount: 1 },
+  { name: "productImages", maxCount: maxProductImages },
+]);
 
 export const apiRouter = express.Router();
 
@@ -63,13 +69,16 @@ apiRouter.post("/ocr/label", upload.single("image"), async (req, res) => {
   }
 });
 
-/** Pipeline completa: OCR opzionale + banche dati + AI */
-apiRouter.post("/analyze", upload.single("image"), async (req, res) => {
+/** Pipeline completa: OCR opzionale + foto prodotto + banche dati + AI */
+apiRouter.post("/analyze", analyzeUpload, async (req, res) => {
   try {
     let ocr = undefined;
+    const files = req.files as { image?: Express.Multer.File[]; productImages?: Express.Multer.File[] } | undefined;
+    const labelFile = files?.image?.[0];
+    const productFiles = files?.productImages ?? [];
 
-    if (req.file) {
-      ocr = await extractTextFromImage(req.file.buffer, req.file.mimetype);
+    if (labelFile) {
+      ocr = await extractTextFromImage(labelFile.buffer, labelFile.mimetype);
     } else if (req.body.ocrText) {
       ocr = {
         rawText: String(req.body.ocrText),
@@ -88,11 +97,23 @@ apiRouter.post("/analyze", upload.single("image"), async (req, res) => {
       ? String(req.body.barcode)
       : ocr?.barcode;
 
+    let productVision = undefined;
+    if (productFiles.length) {
+      productVision = await describeProductFromImages(
+        productFiles.map((f) => ({ buffer: f.buffer, mimeType: f.mimetype })),
+      );
+    }
+
     const evidence = await buildProductEvidence({
       barcode,
       ocr,
-      productName: req.body.productName ? String(req.body.productName) : ocr?.productName,
-      brand: req.body.brand ? String(req.body.brand) : ocr?.brand,
+      productVision,
+      productName:
+        req.body.productName
+          ? String(req.body.productName)
+          : ocr?.productName ?? productVision?.productName,
+      brand:
+        req.body.brand ? String(req.body.brand) : ocr?.brand ?? productVision?.brand,
     });
     const analysis = await analyzeWithAi(evidence);
 

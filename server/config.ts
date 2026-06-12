@@ -11,7 +11,7 @@ export const serverConfig = {
   infomaniakApiToken: process.env.INFOMANIAK_API_TOKEN ?? "",
   infomaniakProductId: process.env.INFOMANIAK_PRODUCT_ID ?? "",
   infomaniakBaseUrl: process.env.INFOMANIAK_BASE_URL ?? "https://api.infomaniak.com",
-  infomaniakLlmModel: process.env.INFOMANIAK_LLM_MODEL ?? "qwen3",
+  infomaniakLlmModel: process.env.INFOMANIAK_LLM_MODEL ?? "google/gemma-4-31B-it",
   /** Ministral 14B: multimodale, leggero, supporta IT — ideale per OCR etichette */
   infomaniakVisionModel:
     process.env.INFOMANIAK_VISION_MODEL ?? "mistralai/Ministral-3-14B-Instruct-2512",

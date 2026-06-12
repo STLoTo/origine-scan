@@ -22,6 +22,16 @@ export interface OcrExtraction {
   model: string;
 }
 
+export interface ProductVision {
+  productName?: string;
+  brand?: string;
+  category?: string;
+  description: string;
+  visualCues: string[];
+  provider: string;
+  model: string;
+}
+
 export interface ProductEvidence {
   id: string;
   barcode?: string;
@@ -44,6 +54,7 @@ export interface ProductEvidence {
   gs1?: Record<string, unknown>;
   serp?: Record<string, unknown>;
   ocr?: OcrExtraction;
+  productVision?: ProductVision;
   sources: SourceEvidence[];
 }
 

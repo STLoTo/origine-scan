@@ -8,9 +8,11 @@ import {
   searchProductByName,
   type FlatOpenProduct,
 } from "../lib/openFactsClient";
+import { inferHintsFromRawText } from "../lib/ocrHints";
 import type {
   OcrExtraction,
   ProductEvidence,
+  ProductVision,
   SourceEvidence,
   SourceStatus,
 } from "../types/evidence";
@@ -93,6 +95,7 @@ export interface BuildEvidenceInput {
   productName?: string;
   brand?: string;
   ocr?: OcrExtraction;
+  productVision?: ProductVision;
 }
 
 /** Aggrega OCR + banche dati in struttura unificata ProductEvidence */
@@ -101,17 +104,28 @@ export async function buildProductEvidence(
 ): Promise<ProductEvidence> {
   const sources: SourceEvidence[] = [];
   let offProduct: FlatOpenProduct | null = null;
-  let barcode = input.barcode ?? input.ocr?.barcode;
+
+  const ocrHints = input.ocr?.rawText ? inferHintsFromRawText(input.ocr.rawText) : {};
+  let barcode =
+    input.barcode?.trim() ||
+    input.ocr?.barcode ||
+    ocrHints.barcode;
   let searchMethod: ProductEvidence["searchMethod"] = "none";
   let searchQuery: string | undefined;
 
   const nameQuery =
     input.productName?.trim() ||
     input.ocr?.productName?.trim() ||
+    input.productVision?.productName?.trim() ||
+    ocrHints.productName?.trim() ||
     undefined;
-  const brandQuery = input.brand?.trim() || input.ocr?.brand?.trim();
+  const brandQuery =
+    input.brand?.trim() ||
+    input.ocr?.brand?.trim() ||
+    input.productVision?.brand?.trim() ||
+    ocrHints.brand?.trim();
 
-  // Fallback: ricerca per nome su Open Facts se manca barcode
+  // Ricerca per nome su Open Facts se manca barcode
   if (!barcode && nameQuery) {
     searchQuery = brandQuery ? `${brandQuery} ${nameQuery}` : nameQuery;
     const { result: nameHit, ms } = await timed(() =>
@@ -207,16 +221,31 @@ export async function buildProductEvidence(
         customsMs,
       ),
     );
-  } else if (input.ocr) {
+  } else if ((input.ocr || nameQuery) && !barcode) {
     searchMethod = "ocr_only";
-    sources.push(
-      source("open_facts", "Open Facts", "skipped", {
-        note: "Serve barcode o nome prodotto",
-      }),
-    );
+    const nameSearchDone = sources.some((s) => s.source === "open_facts_search");
+    if (!nameSearchDone) {
+      sources.push(
+        source("open_facts", "Open Facts", nameQuery ? "empty" : "skipped", {
+          note: nameQuery
+            ? `Nessun match per «${searchQuery ?? nameQuery}»`
+            : "Serve barcode o nome prodotto nel testo OCR",
+        }),
+      );
+    }
     sources.push(
       source("gs1", "GS1 / Barcode lookup", "skipped", {
         note: "Richiede barcode EAN",
+      }),
+    );
+    sources.push(
+      source("certifications_db", "Certificazioni", "skipped", {
+        note: "Richiede prodotto trovato su Open Facts",
+      }),
+    );
+    sources.push(
+      source("customs_un_comtrade", "Dogana / Comtrade", "skipped", {
+        note: "Richiede prodotto trovato su Open Facts",
       }),
     );
   }
@@ -243,6 +272,18 @@ export async function buildProductEvidence(
     );
   }
 
+  if (input.productVision) {
+    sources.push(
+      source("product_vision", "Foto prodotto (vision)", "ok", {
+        productName: input.productVision.productName,
+        brand: input.productVision.brand,
+        category: input.productVision.category,
+        description: input.productVision.description,
+        visualCues: input.productVision.visualCues,
+      }),
+    );
+  }
+
   const gs1Data = sources.find((s) => s.source === "gs1" && s.status === "ok")?.data;
   const serpData = sources.find((s) => s.source === "serp_api" && s.status === "ok")?.data;
   const customsData = sources.find((s) => s.source === "customs_un_comtrade" && s.status === "ok")?.data;
@@ -264,12 +305,14 @@ export async function buildProductEvidence(
       name:
         offProduct?.product_name ??
         input.ocr?.productName ??
+        input.productVision?.productName ??
         (gs1Data?.product_description as string | undefined),
       brand:
         offProduct?.brands ??
         input.ocr?.brand ??
+        input.productVision?.brand ??
         (gs1Data?.company_name as string | undefined),
-      category: offProduct?.categories,
+      category: offProduct?.categories ?? input.productVision?.category,
       imageUrl: offProduct?.image_url,
     },
     composition: {
@@ -294,6 +337,7 @@ export async function buildProductEvidence(
     gs1: gs1Data,
     serp: serp,
     ocr: input.ocr,
+    productVision: input.productVision,
     sources,
   };
 }

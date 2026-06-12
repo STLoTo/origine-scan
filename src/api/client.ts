@@ -47,9 +47,25 @@ export async function ocrLabel(image: File): Promise<OcrExtraction> {
   return data.ocr;
 }
 
-export async function analyzeImage(image: File): Promise<AnalyzeResponse> {
+export const MAX_PRODUCT_PHOTOS = 5;
+
+export async function analyzeImage(
+  image: File | null,
+  extras?: {
+    barcode?: string;
+    productName?: string;
+    brand?: string;
+    productImages?: File[];
+  },
+): Promise<AnalyzeResponse> {
   const form = new FormData();
-  form.append("image", image);
+  if (image) form.append("image", image);
+  if (extras?.barcode?.trim()) form.append("barcode", extras.barcode.trim());
+  if (extras?.productName?.trim()) form.append("productName", extras.productName.trim());
+  if (extras?.brand?.trim()) form.append("brand", extras.brand.trim());
+  for (const img of extras?.productImages ?? []) {
+    form.append("productImages", img);
+  }
 
   const res = await fetch(`${API}/analyze`, { method: "POST", body: form });
   const data = await res.json();
