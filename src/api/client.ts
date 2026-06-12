@@ -120,24 +120,37 @@ async function analyzePayload(body: {
   return data;
 }
 
-export const MAX_PRODUCT_PHOTOS = 5;
+export const MAX_SCAN_PHOTOS = 5;
+/** @deprecated Usare MAX_SCAN_PHOTOS */
+export const MAX_PRODUCT_PHOTOS = MAX_SCAN_PHOTOS;
 
 /** Pipeline consigliata su Vercel: OCR e vision separati, analisi via JSON */
 export async function runFullAnalysis(options: {
+  /** Tutte le foto: la prima per OCR, tutte per vision */
+  imageFiles?: File[];
+  /** @deprecated Usare imageFiles */
   labelFile?: File | null;
+  /** @deprecated Usare imageFiles */
   productFiles?: File[];
   ocr?: OcrExtraction | null;
   barcode?: string;
 }): Promise<AnalyzeResponse> {
+  const imageFiles =
+    options.imageFiles ??
+    [
+      ...(options.labelFile ? [options.labelFile] : []),
+      ...(options.productFiles ?? []),
+    ];
+
   let ocr = options.ocr ?? null;
 
-  if (options.labelFile && !ocr) {
-    ocr = await ocrLabel(options.labelFile);
+  if (imageFiles.length && !ocr) {
+    ocr = await ocrLabel(imageFiles[0]!);
   }
 
   let productVision: ProductVision | undefined;
-  if (options.productFiles?.length) {
-    productVision = await analyzeProductVision(options.productFiles);
+  if (imageFiles.length) {
+    productVision = await analyzeProductVision(imageFiles);
   }
 
   return analyzePayload({
@@ -158,8 +171,10 @@ export async function analyzeImage(
   },
 ): Promise<AnalyzeResponse> {
   return runFullAnalysis({
-    labelFile: image,
-    productFiles: extras?.productImages,
+    imageFiles: [
+      ...(image ? [image] : []),
+      ...(extras?.productImages ?? []),
+    ],
     barcode: extras?.barcode,
   });
 }

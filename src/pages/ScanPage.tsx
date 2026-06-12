@@ -6,7 +6,7 @@ import {
   fetchDatabasesStatus,
   fetchHealth,
   lampsForAnalyzeStep,
-  MAX_PRODUCT_PHOTOS,
+  MAX_SCAN_PHOTOS,
   mergeLampsFromEvidence,
   ocrLabel,
   runFullAnalysis,
@@ -22,21 +22,17 @@ import { DATABASE_INTRO_SHORT } from "../lib/databaseInfo";
 
 type Step = "idle" | "ocr" | "analyze" | "done" | "error";
 
-interface ProductPhoto {
+interface ScanPhoto {
   id: string;
   file: File;
   preview: string;
 }
 
 export function ScanPage() {
-  const labelCameraRef = useRef<HTMLInputElement>(null);
-  const labelGalleryRef = useRef<HTMLInputElement>(null);
-  const productCameraRef = useRef<HTMLInputElement>(null);
-  const productGalleryRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
 
-  const [preview, setPreview] = useState<string | null>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [productPhotos, setProductPhotos] = useState<ProductPhoto[]>([]);
+  const [photos, setPhotos] = useState<ScanPhoto[]>([]);
   const [barcode, setBarcode] = useState("");
   const [ocr, setOcr] = useState<OcrExtraction | null>(null);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
@@ -72,30 +68,22 @@ export function ScanPage() {
 
   useEffect(() => {
     return () => {
-      productPhotos.forEach((p) => URL.revokeObjectURL(p.preview));
+      photos.forEach((p) => URL.revokeObjectURL(p.preview));
     };
-  }, [productPhotos]);
+  }, [photos]);
 
-  const onLabelFile = useCallback(async (f: File) => {
-    const optimized = await resizeImageForOcr(f);
-    setFile(optimized);
-    setPreview(URL.createObjectURL(optimized));
-    setOcr(null);
-    setResult(null);
-    setError(null);
-    setStep("idle");
-  }, []);
-
-  const addProductPhotos = useCallback(async (files: FileList | File[]) => {
+  const addPhotos = useCallback(async (files: FileList | File[]) => {
     const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
     if (!list.length) return;
 
-    setProductPhotos((prev) => {
-      const slots = MAX_PRODUCT_PHOTOS - prev.length;
+    const optimized = await Promise.all(list.map((f) => resizeImageForOcr(f)));
+
+    setPhotos((prev) => {
+      const slots = MAX_SCAN_PHOTOS - prev.length;
       if (slots <= 0) return prev;
 
-      const toAdd = list.slice(0, slots);
-      const next = [
+      const toAdd = optimized.slice(0, slots);
+      return [
         ...prev,
         ...toAdd.map((f) => ({
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -103,29 +91,32 @@ export function ScanPage() {
           preview: URL.createObjectURL(f),
         })),
       ];
-      return next;
     });
+    setOcr(null);
     setResult(null);
     setError(null);
     setStep("idle");
   }, []);
 
-  const removeProductPhoto = useCallback((id: string) => {
-    setProductPhotos((prev) => {
+  const removePhoto = useCallback((id: string) => {
+    setPhotos((prev) => {
       const removed = prev.find((p) => p.id === id);
       if (removed) URL.revokeObjectURL(removed.preview);
       return prev.filter((p) => p.id !== id);
     });
+    setOcr(null);
+    setResult(null);
   }, []);
 
-  const canAnalyze = Boolean(file || barcode.trim() || ocr || productPhotos.length);
+  const canAnalyze = Boolean(photos.length || barcode.trim() || ocr);
+  const slotsLeft = MAX_SCAN_PHOTOS - photos.length;
 
   async function handleOcrOnly() {
-    if (!file) return;
+    if (!photos.length) return;
     setStep("ocr");
     setError(null);
     try {
-      const extracted = await ocrLabel(file);
+      const extracted = await ocrLabel(photos[0]!.file);
       setOcr(extracted);
       if (extracted.barcode) setBarcode(extracted.barcode);
       setStep("done");
@@ -141,14 +132,12 @@ export function ScanPage() {
     setDbLamps(lampsForAnalyzeStep());
     try {
       let response: AnalyzeResponse;
-      const toUpload = file ? [file] : [];
-      const productFiles = await Promise.all(productPhotos.map((p) => resizeImageForOcr(p.file)));
-      assertUploadBudget([...toUpload, ...productFiles]);
+      const imageFiles = photos.map((p) => p.file);
+      assertUploadBudget(imageFiles);
 
-      if (file || productFiles.length) {
+      if (imageFiles.length) {
         response = await runFullAnalysis({
-          labelFile: file,
-          productFiles,
+          imageFiles,
           ocr,
           barcode: barcode.trim() || ocr?.barcode,
         });
@@ -159,7 +148,7 @@ export function ScanPage() {
       } else if (barcode.trim()) {
         response = await analyzeBarcode(barcode.trim());
       } else {
-        throw new Error("Carica un'immagine, scatta foto prodotto o inserisci un barcode");
+        throw new Error("Aggiungi almeno una foto o inserisci un barcode");
       }
 
       setResult(response);
@@ -173,14 +162,13 @@ export function ScanPage() {
   }
 
   const busy = step === "ocr" || step === "analyze";
-  const productSlotsLeft = MAX_PRODUCT_PHOTOS - productPhotos.length;
 
   return (
     <div className="mx-auto min-h-screen max-w-5xl px-4 py-6">
       <header className="mb-8">
         <h1 className="text-2xl font-bold tracking-tight text-white">OrigineScan</h1>
         <p className="mt-1 text-sm text-slate-400">
-          OCR etichetta · foto prodotto · banche dati · analisi AI trasparenza filiera
+          Foto prodotto · OCR · banche dati · analisi AI trasparenza filiera
         </p>
         {health && (
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
@@ -204,124 +192,58 @@ export function ScanPage() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="space-y-4">
-          <Card title="Immagine etichetta">
-            <input
-              ref={labelCameraRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void onLabelFile(f);
-                e.target.value = "";
-              }}
-            />
-            <input
-              ref={labelGalleryRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void onLabelFile(f);
-                e.target.value = "";
-              }}
-            />
-
-            <button
-              type="button"
-              onClick={() => labelGalleryRef.current?.click()}
-              className="flex min-h-[160px] w-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-700 bg-slate-900/50 transition hover:border-emerald-500/50 hover:bg-slate-900"
-            >
-              {preview ? (
-                <img
-                  src={preview}
-                  alt="Anteprima etichetta"
-                  className="max-h-56 rounded-lg object-contain"
-                />
-              ) : (
-                <>
-                  <span className="text-4xl">🏷️</span>
-                  <span className="mt-2 text-sm text-slate-400">
-                    Tocca per caricare l&apos;etichetta
-                  </span>
-                </>
-              )}
-            </button>
-
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Btn
-                onClick={() => labelCameraRef.current?.click()}
-                disabled={busy}
-                variant="secondary"
-                className="flex-1 sm:flex-none"
-              >
-                📷 Scatta etichetta
-              </Btn>
-              <Btn
-                onClick={() => labelGalleryRef.current?.click()}
-                disabled={busy}
-                variant="secondary"
-                className="flex-1 sm:flex-none"
-              >
-                Carica foto
-              </Btn>
-            </div>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Btn onClick={handleOcrOnly} disabled={!file || busy} variant="secondary">
-                {step === "ocr" ? "Estrazione testo…" : "Solo OCR"}
-              </Btn>
-              <Btn onClick={handleFullAnalyze} disabled={busy || !canAnalyze}>
-                {step === "analyze" ? "Analisi in corso…" : "Analizza completo"}
-              </Btn>
-            </div>
-          </Card>
-
           <Card title="Foto prodotto">
-            <p className="mb-3 text-xs text-slate-500">
-              Scatta una o più foto della confezione o del prodotto per aiutare l&apos;AI a
-              riconoscerlo (anche senza etichetta leggibile). Max {MAX_PRODUCT_PHOTOS} foto.
+            <p className="mb-3 text-xs leading-relaxed text-slate-500">
+              Aggiungi fino a {MAX_SCAN_PHOTOS} foto: etichetta, ingredienti, fronte confezione, barcode.
+              La <strong className="text-slate-400">prima foto</strong> viene usata per l&apos;OCR testo;
+              tutte le foto aiutano l&apos;AI a riconoscere il prodotto.
             </p>
 
             <input
-              ref={productCameraRef}
+              ref={cameraRef}
               type="file"
               accept="image/*"
               capture="environment"
               className="hidden"
               onChange={(e) => {
                 const files = e.target.files;
-                if (files?.length) void addProductPhotos(files);
+                if (files?.length) void addPhotos(files);
                 e.target.value = "";
               }}
             />
             <input
-              ref={productGalleryRef}
+              ref={galleryRef}
               type="file"
               accept="image/*"
               multiple
               className="hidden"
               onChange={(e) => {
                 const files = e.target.files;
-                if (files?.length) void addProductPhotos(files);
+                if (files?.length) void addPhotos(files);
                 e.target.value = "";
               }}
             />
 
-            {productPhotos.length > 0 && (
+            {photos.length > 0 ? (
               <div className="mb-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
-                {productPhotos.map((photo) => (
-                  <div key={photo.id} className="relative aspect-square overflow-hidden rounded-lg bg-slate-900">
+                {photos.map((photo, index) => (
+                  <div
+                    key={photo.id}
+                    className="relative aspect-square overflow-hidden rounded-lg border border-slate-700 bg-slate-900"
+                  >
                     <img
                       src={photo.preview}
-                      alt="Foto prodotto"
+                      alt={index === 0 ? "Foto principale OCR" : `Foto ${index + 1}`}
                       className="h-full w-full object-cover"
                     />
+                    {index === 0 && (
+                      <span className="absolute bottom-1 left-1 rounded bg-emerald-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                        OCR
+                      </span>
+                    )}
                     <button
                       type="button"
-                      onClick={() => removeProductPhoto(photo.id)}
+                      onClick={() => removePhoto(photo.id)}
                       className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/70 text-xs text-white"
                       aria-label="Rimuovi foto"
                     >
@@ -329,32 +251,63 @@ export function ScanPage() {
                     </button>
                   </div>
                 ))}
+                {slotsLeft > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => galleryRef.current?.click()}
+                    disabled={busy}
+                    className="flex aspect-square flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-700 bg-slate-900/50 text-slate-500 transition hover:border-emerald-500/40 hover:text-slate-400 disabled:opacity-40"
+                  >
+                    <span className="text-2xl">+</span>
+                    <span className="mt-1 text-[10px]">Aggiungi</span>
+                  </button>
+                )}
               </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => galleryRef.current?.click()}
+                disabled={busy}
+                className="mb-3 flex min-h-[160px] w-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-700 bg-slate-900/50 transition hover:border-emerald-500/50 hover:bg-slate-900 disabled:opacity-40"
+              >
+                <span className="text-4xl">📷</span>
+                <span className="mt-2 text-sm text-slate-400">Tocca per aggiungere foto</span>
+              </button>
             )}
 
             <div className="flex flex-wrap gap-2">
               <Btn
-                onClick={() => productCameraRef.current?.click()}
-                disabled={busy || productSlotsLeft <= 0}
-                className="min-h-12 flex-1 text-base sm:flex-none"
-              >
-                📷 Scatta foto prodotto
-              </Btn>
-              <Btn
-                onClick={() => productGalleryRef.current?.click()}
-                disabled={busy || productSlotsLeft <= 0}
+                onClick={() => cameraRef.current?.click()}
+                disabled={busy || slotsLeft <= 0}
                 variant="secondary"
                 className="flex-1 sm:flex-none"
               >
-                {productPhotos.length ? "Aggiungi altre" : "Da galleria"}
+                📷 Scatta foto
+              </Btn>
+              <Btn
+                onClick={() => galleryRef.current?.click()}
+                disabled={busy || slotsLeft <= 0}
+                variant="secondary"
+                className="flex-1 sm:flex-none"
+              >
+                {photos.length ? "Da galleria" : "Carica foto"}
               </Btn>
             </div>
 
-            {productSlotsLeft <= 0 && (
+            {slotsLeft <= 0 && (
               <p className="mt-2 text-xs text-amber-400">
-                Limite di {MAX_PRODUCT_PHOTOS} foto raggiunto. Rimuovi una foto per aggiungerne altre.
+                Limite di {MAX_SCAN_PHOTOS} foto raggiunto. Rimuovi una foto per aggiungerne altre.
               </p>
             )}
+
+            <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-800 pt-4">
+              <Btn onClick={handleOcrOnly} disabled={!photos.length || busy} variant="secondary">
+                {step === "ocr" ? "Estrazione testo…" : "Solo OCR"}
+              </Btn>
+              <Btn onClick={handleFullAnalyze} disabled={busy || !canAnalyze}>
+                {step === "analyze" ? "Analisi in corso…" : "Analizza completo"}
+              </Btn>
+            </div>
           </Card>
 
           <Card title="Barcode (opzionale)">
@@ -408,8 +361,8 @@ export function ScanPage() {
               )}
               {!ocr.productName && !ocr.brand && (
                 <p className="mt-2 text-xs text-amber-400">
-                  Nome/marca non rilevati — questa foto sembra solo avvertenze o INCI. Scatta anche il fronte
-                  confezione o aggiungi foto prodotto.
+                  Nome/marca non rilevati — aggiungi una foto del fronte confezione (come prima o seconda
+                  immagine).
                 </p>
               )}
               {ocr.barcode ? (
@@ -429,7 +382,7 @@ export function ScanPage() {
           )}
 
           {result?.evidence.productVision && (
-            <Card title="Riconoscimento da foto prodotto">
+            <Card title="Riconoscimento visivo">
               <dl className="grid gap-2 text-sm">
                 {result.evidence.productVision.productName && (
                   <Meta label="Nome stimato" value={result.evidence.productVision.productName} />
@@ -465,9 +418,9 @@ export function ScanPage() {
           ) : (
             <Card title="Risultati">
               <p className="text-sm text-slate-500">
-                Carica l&apos;etichetta e/o scatta <strong className="text-slate-400">foto prodotto</strong>,
-                poi premi <strong className="text-slate-400">Analizza completo</strong> per unire vision,
-                OCR, banche dati e sintesi AI.
+                Aggiungi una o più foto del prodotto, poi premi{" "}
+                <strong className="text-slate-400">Analizza completo</strong> per unire OCR, vision,
+                banche dati e sintesi AI.
               </p>
             </Card>
           )}
