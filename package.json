@@ -8,7 +8,7 @@
     "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\"",
     "dev:api": "tsx watch server/index.ts",
     "dev:web": "vite",
-    "build": "vite build && npm run build:api",
+    "build": "vite build",
     "build:api": "node scripts/build-vercel-api.mjs",
     "preview": "vite preview",
     "test": "tsx scripts/test-connectors.ts",
