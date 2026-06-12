@@ -1,3 +1,4 @@
+import { buildSupplyChainProfile } from "./supplyChain";
 import { extractCertifications } from "../connectors/certifications";
 import { normalizeProductImageUrl } from "../lib/imageProxy";
 import { lookupCustoms } from "../connectors/customs";
@@ -427,6 +428,16 @@ export async function buildProductEvidence(
     source: "ocr_label",
   }));
 
+  const customs = customsData
+    ? {
+        hsCode: customsData.hs_code as string | undefined,
+        country: customsData.last_import_country as string | undefined,
+        source: customsData.source as string | undefined,
+      }
+    : undefined;
+
+  const supplyChain = buildSupplyChainProfile(offProduct, input.ocr, customs);
+
   return {
     id: barcode ?? `ocr-${Date.now()}`,
     barcode,
@@ -448,15 +459,18 @@ export async function buildProductEvidence(
     },
     composition: {
       ingredients: offProduct?.ingredients_text ?? input.ocr?.ingredients,
+      structured: offProduct?.ingredients_structured,
     },
     geography: {
       countries: splitList(offProduct?.countries),
       origins: [
         ...splitList(offProduct?.origins),
-        ...(input.ocr?.originClaims ?? []),
+        ...(offProduct?.origin?.trim() ? [offProduct.origin.trim()] : []),
       ],
       manufacturing: splitList(offProduct?.manufacturing_places),
       purchasePlaces: splitList(offProduct?.purchase_places),
+      originTags: offProduct?.origins_tags,
+      manufacturingTags: offProduct?.manufacturing_places_tags,
     },
     meta: offProduct
       ? {
@@ -471,13 +485,8 @@ export async function buildProductEvidence(
         ? { traceabilityCodes: [], labels: input.ocr.labelClaims }
         : undefined,
     certifications: [...certList, ...ocrCerts],
-    customs: customsData
-      ? {
-          hsCode: customsData.hs_code as string | undefined,
-          country: customsData.last_import_country as string | undefined,
-          source: customsData.source as string | undefined,
-        }
-      : undefined,
+    customs,
+    supplyChain,
     gs1: gs1Data,
     serp: serp,
     webSearch,

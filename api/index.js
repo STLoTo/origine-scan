@@ -7,6 +7,244 @@ import express2 from "express";
 import express from "express";
 import multer from "multer";
 
+// server/lib/originParser.ts
+var PRODUCT_PATTERNS = [
+  /(?:prodotto e confezionato in|prodotto in|made in|fabbricato in|produced in|manufactured in)\s*:?\s*([^\n.;]+)/gi,
+  /(?:confezionato in|packed in|assemblato in)\s*:?\s*([^\n.;]+)/gi
+];
+var INGREDIENT_LINE_PATTERNS = [
+  /(?:origine del(?:la|l'| i)?|origin of the?)\s+([^:\n]+?)\s*:\s*([^\n,;.]+)/gi,
+  /([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9\s\-']{2,35})\s+(?:proveniente da|provenienza)\s+(?:da|d[''])\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\-']{2,40})/gi
+];
+function cleanPlace(value) {
+  return value.replace(/\s+/g, " ").replace(/[.;]+$/, "").trim();
+}
+function cleanIngredient(value) {
+  return value.replace(/\s+/g, " ").trim();
+}
+function isValidIngredientOrigin(ingredient, place) {
+  if (place.length < 3 || ingredient.length < 2) return false;
+  if (/^l[\s']/i.test(place)) return false;
+  if (/prodotto in|made in|fabbricato|confezionato/i.test(ingredient)) return false;
+  return true;
+}
+function pushUnique(claims, claim) {
+  const key = `${claim.type}|${claim.ingredient ?? ""}|${claim.place}`.toLowerCase();
+  if (claims.some((c) => `${c.type}|${c.ingredient ?? ""}|${c.place}`.toLowerCase() === key)) {
+    return;
+  }
+  claims.push(claim);
+}
+function parseLine(line, claims) {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  for (const re of PRODUCT_PATTERNS) {
+    re.lastIndex = 0;
+    let match;
+    while ((match = re.exec(trimmed)) !== null) {
+      const place = cleanPlace(match[1]);
+      if (place.length < 2) continue;
+      const type = /confezionat|packed|assembl/i.test(match[0]) ? "manufacturing" : "product";
+      pushUnique(claims, { type, place, raw: match[0].trim() });
+    }
+  }
+  for (const re of INGREDIENT_LINE_PATTERNS) {
+    re.lastIndex = 0;
+    let match;
+    while ((match = re.exec(trimmed)) !== null) {
+      const ingredient = cleanIngredient(match[1]);
+      const place = cleanPlace(match[2]);
+      if (!isValidIngredientOrigin(ingredient, place)) continue;
+      pushUnique(claims, {
+        type: "ingredient",
+        ingredient,
+        place,
+        raw: match[0].trim()
+      });
+    }
+  }
+  const fromMatch = trimmed.match(
+    /^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\-']{2,30})\s+from\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\-']{2,30})$/i
+  );
+  if (fromMatch && isValidIngredientOrigin(fromMatch[1], fromMatch[2])) {
+    pushUnique(claims, {
+      type: "ingredient",
+      ingredient: cleanIngredient(fromMatch[1]),
+      place: cleanPlace(fromMatch[2]),
+      raw: fromMatch[0].trim()
+    });
+  }
+}
+function parseOriginsFromText(text) {
+  const claims = [];
+  if (!text?.trim()) return claims;
+  for (const line of text.split("\n")) {
+    parseLine(line, claims);
+  }
+  const inlineFrom = text.matchAll(
+    /\b([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\-']{2,30})\s+from\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\-']{2,30})\b/gi
+  );
+  for (const match of inlineFrom) {
+    const ingredient = cleanIngredient(match[1]);
+    const place = cleanPlace(match[2]);
+    if (!isValidIngredientOrigin(ingredient, place)) continue;
+    pushUnique(claims, {
+      type: "ingredient",
+      ingredient,
+      place,
+      raw: match[0].trim()
+    });
+  }
+  return claims;
+}
+function expandLegacyOriginClaims(lines) {
+  const claims = [];
+  for (const line of lines) {
+    parseLine(line, claims);
+  }
+  return claims;
+}
+
+// server/core/supplyChain.ts
+function formatOffTag(tag) {
+  const cleaned = tag.replace(/^[^:]+:\s*/, "").replace(/_/g, " ").trim();
+  if (!cleaned) return tag;
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+function formatTags(tags) {
+  if (!tags?.length) return [];
+  return [...new Set(tags.map(formatOffTag).filter(Boolean))];
+}
+function splitList(value) {
+  if (!value?.trim()) return [];
+  return value.split(",").map((s) => s.trim()).filter(Boolean);
+}
+function buildSupplyChainProfile(offProduct, ocr, customs) {
+  const items = [];
+  const ingredientOrigins = [];
+  const ingredientOriginMap = /* @__PURE__ */ new Map();
+  function addIngredientOrigin(ingredient, origin, level, source2, percentEstimate) {
+    const key = ingredient.toLowerCase();
+    const existing = ingredientOriginMap.get(key);
+    if (existing && existing.level === "verified") return;
+    ingredientOriginMap.set(key, {
+      ingredient,
+      origin,
+      level,
+      source: source2,
+      percentEstimate: percentEstimate ?? existing?.percentEstimate
+    });
+  }
+  const offOrigins = splitList(offProduct?.origins);
+  const offOriginTags = formatTags(offProduct?.origins_tags);
+  const offManufacturing = splitList(offProduct?.manufacturing_places);
+  const offManufacturingTags = formatTags(offProduct?.manufacturing_places_tags);
+  const offCountries = splitList(offProduct?.countries);
+  const offOriginText = offProduct?.origin?.trim();
+  if (offOriginText) {
+    items.push({
+      label: "Origine (testo etichetta OFF)",
+      value: offOriginText,
+      level: "partial",
+      source: "Open Facts"
+    });
+    for (const claim of parseOriginsFromText(offOriginText)) {
+      if (claim.type === "ingredient" && claim.ingredient) {
+        addIngredientOrigin(claim.ingredient, claim.place, "partial", "Open Facts (origin)");
+      }
+    }
+  }
+  if (offOrigins.length || offOriginTags.length) {
+    items.push({
+      label: "Origine ingredienti",
+      value: [...offOrigins, ...offOriginTags].join(", "),
+      level: "partial",
+      source: "Open Facts"
+    });
+  }
+  if (offManufacturing.length || offManufacturingTags.length) {
+    items.push({
+      label: "Luogo di produzione / confezionamento",
+      value: [...offManufacturing, ...offManufacturingTags].join(", "),
+      level: "partial",
+      source: "Open Facts"
+    });
+  }
+  if (offCountries.length) {
+    items.push({
+      label: "Paesi di vendita",
+      value: offCountries.join(", "),
+      level: "partial",
+      source: "Open Facts"
+    });
+  }
+  if (offProduct?.emb_codes?.trim()) {
+    items.push({
+      label: "Codici tracciabilit\xE0 (EMB)",
+      value: offProduct.emb_codes,
+      level: "verified",
+      source: "Open Facts"
+    });
+  }
+  for (const ing of offProduct?.ingredients_structured ?? []) {
+    if (!ing.text) continue;
+    const existing = ingredientOriginMap.get(ing.text.toLowerCase());
+    ingredientOriginMap.set(ing.text.toLowerCase(), {
+      ingredient: ing.text,
+      origin: existing?.origin,
+      level: existing?.origin ? existing.level : "unavailable",
+      source: existing?.source ?? "Open Facts (ingredienti)",
+      percentEstimate: ing.percentEstimate
+    });
+  }
+  const ocrText = ocr?.rawText ?? "";
+  const ocrClaims = [
+    ...parseOriginsFromText(ocrText),
+    ...expandLegacyOriginClaims(ocr?.originClaims ?? [])
+  ];
+  for (const claim of ocrClaims) {
+    if (claim.type === "ingredient" && claim.ingredient) {
+      addIngredientOrigin(claim.ingredient, claim.place, "verified", "OCR etichetta");
+      continue;
+    }
+    const label = claim.type === "manufacturing" ? "Produzione / confezionamento (OCR)" : "Origine prodotto (OCR)";
+    const duplicate = items.some((i) => i.label === label && i.value?.includes(claim.place));
+    if (!duplicate) {
+      items.push({
+        label,
+        value: claim.place,
+        level: "verified",
+        source: "OCR etichetta"
+      });
+    }
+  }
+  const hasIngredients = Boolean(offProduct?.ingredients_text?.trim()) || Boolean(ocr?.ingredients?.trim());
+  items.push({
+    label: "Lista ingredienti",
+    value: offProduct?.ingredients_text ?? ocr?.ingredients,
+    level: hasIngredients ? offProduct?.ingredients_text ? "partial" : "verified" : "unavailable",
+    source: offProduct?.ingredients_text ? "Open Facts" : ocr?.ingredients ? "OCR etichetta" : void 0
+  });
+  if (customs?.hsCode) {
+    items.push({
+      label: "Codice doganale (HS)",
+      value: `${customs.hsCode}${customs.country ? ` \xB7 ${customs.country}` : ""}`,
+      level: customs.source === "un_comtrade" ? "partial" : "partial",
+      source: customs.source === "un_comtrade" ? "UN Comtrade" : "Inferenza da categoria"
+    });
+  }
+  ingredientOrigins.push(...ingredientOriginMap.values());
+  const hasIngredientOrigins = ingredientOrigins.some((i) => i.origin);
+  const hasGeo = items.some(
+    (i) => i.level !== "unavailable" && !i.label.startsWith("Lista ingredienti") && !i.label.startsWith("Codice doganale")
+  );
+  let overallLevel = "unavailable";
+  if (hasIngredientOrigins && hasGeo) overallLevel = "verified";
+  else if (hasIngredientOrigins || hasGeo || hasIngredients) overallLevel = "partial";
+  const summary = overallLevel === "verified" ? "Filiera parzialmente tracciabile: presenti origini specifiche e dati geografici." : overallLevel === "partial" ? "Dati filiera incompleti: ingredienti o geografia generica, origini per singolo ingrediente limitate." : "Filiera non tracciabile: mancano origini e dati geografici affidabili.";
+  return { items, ingredientOrigins, overallLevel, summary };
+}
+
 // server/connectors/certifications.ts
 var CERT_KEYWORDS = [
   "bio",
@@ -261,9 +499,9 @@ function buildWebSearchQuery(brand, productName, labelKind) {
   const base = [brand, productName].filter(Boolean).join(" ").trim();
   if (!base) return "";
   if (labelKind === "cleaning" || labelKind === "cosmetic") {
-    return `${base} scheda prodotto ingredienti INCI`;
+    return `${base} origine produzione scheda INCI filiera`;
   }
-  return `${base} prodotto origine filiera`;
+  return `${base} origine ingredienti filiera produzione`;
 }
 async function searchShopping(query, barcode) {
   if (!serverConfig.serpApiKey) {
@@ -401,9 +639,14 @@ var OFF_FIELDS = [
   "brands",
   "categories",
   "countries",
+  "countries_tags",
   "origins",
+  "origins_tags",
+  "origin",
   "manufacturing_places",
+  "manufacturing_places_tags",
   "ingredients_text",
+  "ingredients",
   "labels",
   "labels_tags",
   "codes_tags",
@@ -412,17 +655,38 @@ var OFF_FIELDS = [
   "emb_codes",
   "purchase_places"
 ].join(",");
+function flattenIngredients(raw) {
+  if (!Array.isArray(raw)) return void 0;
+  const list = raw.map((item) => {
+    if (!item || typeof item !== "object") return null;
+    const o = item;
+    const text = String(o.text ?? "").trim();
+    if (!text) return null;
+    return {
+      text,
+      percentEstimate: typeof o.percent_estimate === "number" ? o.percent_estimate : void 0,
+      percentMin: typeof o.percent_min === "number" ? o.percent_min : void 0,
+      percentMax: typeof o.percent_max === "number" ? o.percent_max : void 0
+    };
+  }).filter(Boolean);
+  return list.length ? list : void 0;
+}
 function flattenProduct(product, sourceDatabase, productType) {
   return {
     product_name: String(product.product_name ?? product.product_name_it ?? ""),
     brands: String(product.brands ?? ""),
     categories: String(product.categories ?? ""),
     countries: String(product.countries ?? ""),
+    countries_tags: Array.isArray(product.countries_tags) ? product.countries_tags : void 0,
     origins: String(product.origins ?? ""),
+    origins_tags: Array.isArray(product.origins_tags) ? product.origins_tags : void 0,
+    origin: String(product.origin ?? product.origin_it ?? product.origin_fr ?? ""),
     manufacturing_places: String(product.manufacturing_places ?? ""),
+    manufacturing_places_tags: Array.isArray(product.manufacturing_places_tags) ? product.manufacturing_places_tags : void 0,
     purchase_places: String(product.purchase_places ?? ""),
     emb_codes: String(product.emb_codes ?? ""),
     ingredients_text: String(product.ingredients_text ?? ""),
+    ingredients_structured: flattenIngredients(product.ingredients),
     labels: String(product.labels ?? ""),
     labels_tags: Array.isArray(product.labels_tags) ? product.labels_tags : void 0,
     image_url: String(product.image_front_url ?? product.image_url ?? ""),
@@ -724,7 +988,7 @@ function inferHintsFromRawText(rawText) {
 }
 
 // server/core/evidenceBuilder.ts
-function splitList(value) {
+function splitList2(value) {
   if (!value?.trim()) return [];
   return value.split(",").map((s) => s.trim()).filter(Boolean);
 }
@@ -958,15 +1222,15 @@ async function buildProductEvidence(input) {
           certs
         )
       );
-      const { result: customs, ms: customsMs } = await timed(
+      const { result: customs2, ms: customsMs } = await timed(
         () => lookupCustoms(offProduct, barcode)
       );
       sources.push(
         source(
           "customs_un_comtrade",
           "Dogana / Comtrade",
-          customs.hs_code || customs.last_import_country ? "ok" : "empty",
-          customs,
+          customs2.hs_code || customs2.last_import_country ? "ok" : "empty",
+          customs2,
           customsMs
         )
       );
@@ -1039,6 +1303,12 @@ async function buildProductEvidence(input) {
     issuer: "OCR etichetta",
     source: "ocr_label"
   }));
+  const customs = customsData ? {
+    hsCode: customsData.hs_code,
+    country: customsData.last_import_country,
+    source: customsData.source
+  } : void 0;
+  const supplyChain = buildSupplyChainProfile(offProduct, input.ocr, customs);
   return {
     id: barcode ?? `ocr-${Date.now()}`,
     barcode,
@@ -1051,31 +1321,31 @@ async function buildProductEvidence(input) {
       imageUrl: normalizeProductImageUrl(offProduct?.image_url)
     },
     composition: {
-      ingredients: offProduct?.ingredients_text ?? input.ocr?.ingredients
+      ingredients: offProduct?.ingredients_text ?? input.ocr?.ingredients,
+      structured: offProduct?.ingredients_structured
     },
     geography: {
-      countries: splitList(offProduct?.countries),
+      countries: splitList2(offProduct?.countries),
       origins: [
-        ...splitList(offProduct?.origins),
-        ...input.ocr?.originClaims ?? []
+        ...splitList2(offProduct?.origins),
+        ...offProduct?.origin?.trim() ? [offProduct.origin.trim()] : []
       ],
-      manufacturing: splitList(offProduct?.manufacturing_places),
-      purchasePlaces: splitList(offProduct?.purchase_places)
+      manufacturing: splitList2(offProduct?.manufacturing_places),
+      purchasePlaces: splitList2(offProduct?.purchase_places),
+      originTags: offProduct?.origins_tags,
+      manufacturingTags: offProduct?.manufacturing_places_tags
     },
     meta: offProduct ? {
       sourceDatabase: offProduct.source_database,
-      traceabilityCodes: splitList(offProduct.emb_codes),
+      traceabilityCodes: splitList2(offProduct.emb_codes),
       labels: [
-        ...splitList(offProduct.labels),
+        ...splitList2(offProduct.labels),
         ...offProduct.labels_tags?.map((t) => t.replace(/^[^:]+:\s*/, "")) ?? []
       ].filter((v, i, arr) => arr.indexOf(v) === i)
     } : input.ocr?.labelClaims?.length ? { traceabilityCodes: [], labels: input.ocr.labelClaims } : void 0,
     certifications: [...certList, ...ocrCerts],
-    customs: customsData ? {
-      hsCode: customsData.hs_code,
-      country: customsData.last_import_country,
-      source: customsData.source
-    } : void 0,
+    customs,
+    supplyChain,
     gs1: gs1Data,
     serp,
     webSearch,
@@ -1169,7 +1439,7 @@ async function checkInfomaniakVisionAvailable() {
 }
 
 // server/lib/llm.ts
-var SYSTEM_PROMPT = "Sei un analista di trasparenza filiera produttiva. Rispondi in italiano. Non giudicare in base al paese. Distingui fatti verificati da claim incerti. Se sono presenti risultati di ricerca web, usali per affinare la sintesi (marca, categoria, origine, contesto). Il web non \xE8 fonte assoluta: confrontalo con OCR e banche dati e segnala conflitti. Rispondi SOLO con JSON valido, senza markdown. verifiedFacts, uncertainClaims e conflicts devono essere array di STRINGHE, non oggetti.";
+var SYSTEM_PROMPT = "Sei un analista di trasparenza filiera produttiva. Rispondi in italiano. Non giudicare in base al paese. Distingui fatti verificati da claim incerti. Se sono presenti risultati di ricerca web o il profilo filiera (supplyChain), usali per affinare la sintesi (marca, categoria, origine, contesto). Il web non \xE8 fonte assoluta: confrontalo con OCR e banche dati e segnala conflitti. Per ogni origine ingrediente indica il livello di certezza (verified/partial/unavailable). Rispondi SOLO con JSON valido, senza markdown. verifiedFacts, uncertainClaims e conflicts devono essere array di STRINGHE, non oggetti.";
 function buildWebContext(webSearch) {
   const web = webSearch;
   if (!web) return "";
@@ -1189,7 +1459,7 @@ function buildWebContext(webSearch) {
   );
 }
 function buildUserPrompt(evidence) {
-  const { webSearch, ...evidenceWithoutWeb } = evidence;
+  const { webSearch, supplyChain, ...evidenceCore } = evidence;
   return `Analizza queste evidenze prodotto e produci JSON:
 {
   "summary": "4-6 frasi in italiano",
@@ -1200,7 +1470,11 @@ function buildUserPrompt(evidence) {
 }
 
 Evidenze:
-${JSON.stringify(evidenceWithoutWeb, null, 2)}${buildWebContext(webSearch)}`;
+${JSON.stringify(evidenceCore, null, 2)}${buildWebContext(webSearch)}${buildSupplyChainContext(supplyChain)}`;
+}
+function buildSupplyChainContext(supplyChain) {
+  if (!supplyChain) return "";
+  return "\n\nProfilo filiera (origine prodotto e ingredienti \u2014 rispetta i livelli verified/partial/unavailable):\n" + JSON.stringify(supplyChain, null, 2);
 }
 function normalizeStrings(value) {
   if (!Array.isArray(value)) return [];
@@ -1300,11 +1574,9 @@ function enrichFromRawText(rawText) {
   for (const kw of ["bio", "organic", "vegan", "gluten free", "senza glutine", "fair trade", "dop", "igp"]) {
     if (lower.includes(kw)) labelClaims.push(kw);
   }
-  const originClaims = [];
-  const originMatch = text.match(
-    /(?:prodotto in|made in|origine|fabbricato in)\s*:?\s*([^\n,;]+)/gi
+  const originClaims = parseOriginsFromText(text).map(
+    (c) => c.ingredient ? `${c.ingredient}: ${c.place}` : c.place
   );
-  if (originMatch) originClaims.push(...originMatch.map((s) => s.trim()));
   return {
     rawText: text,
     productName: hints.productName,

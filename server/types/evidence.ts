@@ -37,6 +37,37 @@ export interface ProductVision {
   model: string;
 }
 
+export type TraceLevel = "verified" | "partial" | "unavailable";
+
+export interface TraceItem {
+  label: string;
+  value?: string;
+  level: TraceLevel;
+  source?: string;
+}
+
+export interface IngredientOriginItem {
+  ingredient: string;
+  origin?: string;
+  level: TraceLevel;
+  source?: string;
+  percentEstimate?: number;
+}
+
+export interface SupplyChainProfile {
+  items: TraceItem[];
+  ingredientOrigins: IngredientOriginItem[];
+  overallLevel: TraceLevel;
+  summary: string;
+}
+
+export interface StructuredIngredient {
+  text: string;
+  percentEstimate?: number;
+  percentMin?: number;
+  percentMax?: number;
+}
+
 export interface ProductEvidence {
   id: string;
   barcode?: string;
@@ -51,12 +82,15 @@ export interface ProductEvidence {
   };
   composition?: {
     ingredients?: string;
+    structured?: StructuredIngredient[];
   };
   geography: {
     countries: string[];
     origins: string[];
     manufacturing: string[];
     purchasePlaces: string[];
+    originTags?: string[];
+    manufacturingTags?: string[];
   };
   meta?: {
     sourceDatabase?: string;
@@ -69,6 +103,8 @@ export interface ProductEvidence {
     country?: string;
     source?: string;
   };
+  /** Profilo filiera: origine prodotto e ingredienti con livello di affidabilità */
+  supplyChain?: SupplyChainProfile;
   gs1?: Record<string, unknown>;
   serp?: Record<string, unknown>;
   /** Risultati ricerca web Google (SerpApi) per arricchire sintesi AI */

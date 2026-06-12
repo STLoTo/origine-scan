@@ -34,6 +34,37 @@ export interface ProductVision {
   model: string;
 }
 
+export type TraceLevel = "verified" | "partial" | "unavailable";
+
+export interface TraceItem {
+  label: string;
+  value?: string;
+  level: TraceLevel;
+  source?: string;
+}
+
+export interface IngredientOriginItem {
+  ingredient: string;
+  origin?: string;
+  level: TraceLevel;
+  source?: string;
+  percentEstimate?: number;
+}
+
+export interface SupplyChainProfile {
+  items: TraceItem[];
+  ingredientOrigins: IngredientOriginItem[];
+  overallLevel: TraceLevel;
+  summary: string;
+}
+
+export interface StructuredIngredient {
+  text: string;
+  percentEstimate?: number;
+  percentMin?: number;
+  percentMax?: number;
+}
+
 export interface ProductEvidence {
   id: string;
   barcode?: string;
@@ -45,12 +76,17 @@ export interface ProductEvidence {
     category?: string;
     imageUrl?: string;
   };
-  composition?: { ingredients?: string };
+  composition?: {
+    ingredients?: string;
+    structured?: StructuredIngredient[];
+  };
   geography: {
     countries: string[];
     origins: string[];
     manufacturing: string[];
     purchasePlaces: string[];
+    originTags?: string[];
+    manufacturingTags?: string[];
   };
   meta?: {
     sourceDatabase?: string;
@@ -59,6 +95,7 @@ export interface ProductEvidence {
   };
   certifications: Array<{ name: string; issuer: string; source: string }>;
   customs?: { hsCode?: string; country?: string; source?: string };
+  supplyChain?: SupplyChainProfile;
   gs1?: Record<string, unknown>;
   serp?: Record<string, unknown>;
   webSearch?: Record<string, unknown>;

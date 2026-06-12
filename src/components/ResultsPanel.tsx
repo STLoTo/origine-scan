@@ -3,6 +3,7 @@ import { DATABASE_CATALOG, mergeLampsFromEvidence } from "../lib/databaseCatalog
 import { Card } from "./Card";
 import { DatabaseStatusGrid } from "./DatabaseStatusGrid";
 import { ProductImage } from "./ProductImage";
+import { FilieraPanel } from "./FilieraPanel";
 import { ProductSummaryCard } from "./ProductSummaryCard";
 import { TransparencyBadge } from "./TransparencyBadge";
 
@@ -23,6 +24,8 @@ export function ResultsPanel({ evidence, analysis }: Props) {
   return (
     <div className="space-y-4">
       <ProductSummaryCard evidence={evidence} />
+
+      {evidence.supplyChain && <FilieraPanel profile={evidence.supplyChain} />}
 
       <Card title="Sintesi AI">
         <div className="mb-3 flex flex-wrap items-center gap-2">

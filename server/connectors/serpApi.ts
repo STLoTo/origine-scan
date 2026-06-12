@@ -65,9 +65,9 @@ export function buildWebSearchQuery(
   if (!base) return "";
 
   if (labelKind === "cleaning" || labelKind === "cosmetic") {
-    return `${base} scheda prodotto ingredienti INCI`;
+    return `${base} origine produzione scheda INCI filiera`;
   }
-  return `${base} prodotto origine filiera`;
+  return `${base} origine ingredienti filiera produzione`;
 }
 
 export async function searchShopping(

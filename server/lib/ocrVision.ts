@@ -6,6 +6,7 @@ import {
 } from "./infomaniakClient";
 import { extractBarcode, inferHintsFromRawText } from "./ocrHints";
 import { analyzeOcrText } from "./ocrTextAnalysis";
+import { parseOriginsFromText } from "./originParser";
 import type { OcrExtraction } from "../types/evidence";
 
 export { checkInfomaniakVisionAvailable } from "./infomaniakClient";
@@ -29,11 +30,9 @@ function enrichFromRawText(rawText: string): Partial<OcrExtraction> {
     if (lower.includes(kw)) labelClaims.push(kw);
   }
 
-  const originClaims: string[] = [];
-  const originMatch = text.match(
-    /(?:prodotto in|made in|origine|fabbricato in)\s*:?\s*([^\n,;]+)/gi,
+  const originClaims = parseOriginsFromText(text).map((c) =>
+    c.ingredient ? `${c.ingredient}: ${c.place}` : c.place,
   );
-  if (originMatch) originClaims.push(...originMatch.map((s) => s.trim()));
 
   return {
     rawText: text,

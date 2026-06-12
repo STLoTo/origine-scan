@@ -7,8 +7,9 @@ export { checkInfomaniakLlmAvailable } from "./infomaniakClient";
 const SYSTEM_PROMPT =
   "Sei un analista di trasparenza filiera produttiva. Rispondi in italiano. " +
   "Non giudicare in base al paese. Distingui fatti verificati da claim incerti. " +
-  "Se sono presenti risultati di ricerca web, usali per affinare la sintesi (marca, categoria, origine, contesto). " +
+  "Se sono presenti risultati di ricerca web o il profilo filiera (supplyChain), usali per affinare la sintesi (marca, categoria, origine, contesto). " +
   "Il web non è fonte assoluta: confrontalo con OCR e banche dati e segnala conflitti. " +
+  "Per ogni origine ingrediente indica il livello di certezza (verified/partial/unavailable). " +
   "Rispondi SOLO con JSON valido, senza markdown. " +
   "verifiedFacts, uncertainClaims e conflicts devono essere array di STRINGHE, non oggetti.";
 
@@ -45,7 +46,7 @@ function buildWebContext(webSearch?: Record<string, unknown>): string {
 }
 
 function buildUserPrompt(evidence: ProductEvidence): string {
-  const { webSearch, ...evidenceWithoutWeb } = evidence;
+  const { webSearch, supplyChain, ...evidenceCore } = evidence;
   return `Analizza queste evidenze prodotto e produci JSON:
 {
   "summary": "4-6 frasi in italiano",
@@ -56,7 +57,15 @@ function buildUserPrompt(evidence: ProductEvidence): string {
 }
 
 Evidenze:
-${JSON.stringify(evidenceWithoutWeb, null, 2)}${buildWebContext(webSearch)}`;
+${JSON.stringify(evidenceCore, null, 2)}${buildWebContext(webSearch)}${buildSupplyChainContext(supplyChain)}`;
+}
+
+function buildSupplyChainContext(supplyChain?: ProductEvidence["supplyChain"]): string {
+  if (!supplyChain) return "";
+  return (
+    "\n\nProfilo filiera (origine prodotto e ingredienti — rispetta i livelli verified/partial/unavailable):\n" +
+    JSON.stringify(supplyChain, null, 2)
+  );
 }
 
 function normalizeStrings(value: unknown): string[] {

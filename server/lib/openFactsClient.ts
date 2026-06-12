@@ -6,9 +6,14 @@ const OFF_FIELDS = [
   "brands",
   "categories",
   "countries",
+  "countries_tags",
   "origins",
+  "origins_tags",
+  "origin",
   "manufacturing_places",
+  "manufacturing_places_tags",
   "ingredients_text",
+  "ingredients",
   "labels",
   "labels_tags",
   "codes_tags",
@@ -25,21 +30,54 @@ interface OffApiResponse {
   product_type?: string;
 }
 
+export interface StructuredIngredient {
+  text: string;
+  percentEstimate?: number;
+  percentMin?: number;
+  percentMax?: number;
+}
+
 export interface FlatOpenProduct {
   product_name?: string;
   brands?: string;
   categories?: string;
   countries?: string;
+  countries_tags?: string[];
   origins?: string;
+  origins_tags?: string[];
+  /** Testo libero origine prodotto/ingredienti (campo origin OFF) */
+  origin?: string;
   manufacturing_places?: string;
+  manufacturing_places_tags?: string[];
   purchase_places?: string;
   emb_codes?: string;
   ingredients_text?: string;
+  ingredients_structured?: StructuredIngredient[];
   labels?: string;
   labels_tags?: string[];
   image_url?: string;
   product_type?: string;
   source_database: string;
+}
+
+function flattenIngredients(raw: unknown): StructuredIngredient[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const list = raw
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const o = item as Record<string, unknown>;
+      const text = String(o.text ?? "").trim();
+      if (!text) return null;
+      return {
+        text,
+        percentEstimate:
+          typeof o.percent_estimate === "number" ? o.percent_estimate : undefined,
+        percentMin: typeof o.percent_min === "number" ? o.percent_min : undefined,
+        percentMax: typeof o.percent_max === "number" ? o.percent_max : undefined,
+      };
+    })
+    .filter(Boolean) as StructuredIngredient[];
+  return list.length ? list : undefined;
 }
 
 function flattenProduct(
@@ -52,11 +90,22 @@ function flattenProduct(
     brands: String(product.brands ?? ""),
     categories: String(product.categories ?? ""),
     countries: String(product.countries ?? ""),
+    countries_tags: Array.isArray(product.countries_tags)
+      ? (product.countries_tags as string[])
+      : undefined,
     origins: String(product.origins ?? ""),
+    origins_tags: Array.isArray(product.origins_tags)
+      ? (product.origins_tags as string[])
+      : undefined,
+    origin: String(product.origin ?? product.origin_it ?? product.origin_fr ?? ""),
     manufacturing_places: String(product.manufacturing_places ?? ""),
+    manufacturing_places_tags: Array.isArray(product.manufacturing_places_tags)
+      ? (product.manufacturing_places_tags as string[])
+      : undefined,
     purchase_places: String(product.purchase_places ?? ""),
     emb_codes: String(product.emb_codes ?? ""),
     ingredients_text: String(product.ingredients_text ?? ""),
+    ingredients_structured: flattenIngredients(product.ingredients),
     labels: String(product.labels ?? ""),
     labels_tags: Array.isArray(product.labels_tags)
       ? (product.labels_tags as string[])
