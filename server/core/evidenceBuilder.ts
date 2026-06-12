@@ -325,7 +325,20 @@ export async function buildProductEvidence(
         ...(input.ocr?.originClaims ?? []),
       ],
       manufacturing: splitList(offProduct?.manufacturing_places),
+      purchasePlaces: splitList(offProduct?.purchase_places),
     },
+    meta: offProduct
+      ? {
+          sourceDatabase: offProduct.source_database,
+          traceabilityCodes: splitList(offProduct.emb_codes),
+          labels: [
+            ...splitList(offProduct.labels),
+            ...(offProduct.labels_tags?.map((t) => t.replace(/^[^:]+:\s*/, "")) ?? []),
+          ].filter((v, i, arr) => arr.indexOf(v) === i),
+        }
+      : input.ocr?.labelClaims?.length
+        ? { traceabilityCodes: [], labels: input.ocr.labelClaims }
+        : undefined,
     certifications: [...certList, ...ocrCerts],
     customs: customsData
       ? {

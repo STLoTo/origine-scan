@@ -31,6 +31,8 @@ export interface FlatOpenProduct {
   countries?: string;
   origins?: string;
   manufacturing_places?: string;
+  purchase_places?: string;
+  emb_codes?: string;
   ingredients_text?: string;
   labels?: string;
   labels_tags?: string[];
@@ -51,6 +53,8 @@ function flattenProduct(
     countries: String(product.countries ?? ""),
     origins: String(product.origins ?? ""),
     manufacturing_places: String(product.manufacturing_places ?? ""),
+    purchase_places: String(product.purchase_places ?? ""),
+    emb_codes: String(product.emb_codes ?? ""),
     ingredients_text: String(product.ingredients_text ?? ""),
     labels: String(product.labels ?? ""),
     labels_tags: Array.isArray(product.labels_tags)

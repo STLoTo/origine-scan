@@ -52,6 +52,12 @@ export interface ProductEvidence {
     countries: string[];
     origins: string[];
     manufacturing: string[];
+    purchasePlaces: string[];
+  };
+  meta?: {
+    sourceDatabase?: string;
+    traceabilityCodes: string[];
+    labels: string[];
   };
   certifications: Array<{ name: string; issuer: string; source: string }>;
   customs?: {

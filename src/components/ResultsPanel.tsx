@@ -2,6 +2,7 @@ import type { AiAnalysis, ProductEvidence } from "../types/evidence";
 import { DATABASE_CATALOG, mergeLampsFromEvidence } from "../lib/databaseCatalog";
 import { Card } from "./Card";
 import { DatabaseStatusGrid } from "./DatabaseStatusGrid";
+import { ProductSummaryCard } from "./ProductSummaryCard";
 import { TransparencyBadge } from "./TransparencyBadge";
 
 const STATUS_COLOR = {
@@ -20,6 +21,8 @@ interface Props {
 export function ResultsPanel({ evidence, analysis }: Props) {
   return (
     <div className="space-y-4">
+      <ProductSummaryCard evidence={evidence} />
+
       <Card title="Sintesi AI">
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <TransparencyBadge level={analysis.transparencyLevel} />
@@ -107,6 +110,12 @@ export function ResultsPanel({ evidence, analysis }: Props) {
             label="Produzione"
             value={evidence.geography.manufacturing.join(", ") || "—"}
           />
+          {(evidence.geography.purchasePlaces?.length ?? 0) > 0 && (
+            <Row
+              label="Luoghi acquisto"
+              value={evidence.geography.purchasePlaces.join(", ")}
+            />
+          )}
           {evidence.customs?.hsCode && (
             <Row
               label="Codice HS"
