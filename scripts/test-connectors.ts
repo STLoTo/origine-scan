@@ -8,7 +8,7 @@ import { lookupCustoms } from "../server/connectors/customs";
 import { lookupDpp } from "../server/connectors/dpp";
 import { lookupGs1 } from "../server/connectors/gs1";
 import { lookupMarketplace } from "../server/connectors/marketplace";
-import { searchShopping } from "../server/connectors/serpApi";
+import { searchShopping, searchWeb } from "../server/connectors/serpApi";
 import {
   fetchOpenBeautyFacts,
   fetchOpenFoodFacts,
@@ -93,6 +93,26 @@ async function testSerpApi() {
   else record("serp_api", "SerpApi / Google Shopping", "VUOTO", ms, String(result.error ?? "Nessun risultato"));
 }
 
+async function testSerpWeb() {
+  if (!serverConfig.serpApiKey) {
+    record("serp_web", "SerpApi / Ricerca web", "NON_CONFIGURATO", 0, "SERP_API_KEY assente in .env");
+    return;
+  }
+  const { result, ms } = await timed(() =>
+    searchWeb("Nutella Ferrero prodotto origine filiera"),
+  );
+  const count = result.organic_results?.length ?? 0;
+  if (count || result.answer_box?.snippet)
+    record(
+      "serp_web",
+      "SerpApi / Ricerca web",
+      "OK",
+      ms,
+      `${count} risultati organici${result.answer_box?.snippet ? " + answer box" : ""}`,
+    );
+  else record("serp_web", "SerpApi / Ricerca web", "VUOTO", ms, String(result.error ?? "Nessun risultato"));
+}
+
 async function testMarketplace() {
   if (!serverConfig.serpApiKey) {
     record("marketplace", "Marketplace (via SerpApi)", "NON_CONFIGURATO", 0, "Richiede SERP_API_KEY");
@@ -153,6 +173,7 @@ async function main() {
   await testUniversalResolve();
   await testGs1();
   await testSerpApi();
+  await testSerpWeb();
   await testMarketplace();
   await testCertifications();
   await testCustoms();

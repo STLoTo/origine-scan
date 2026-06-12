@@ -61,6 +61,7 @@ export interface ProductEvidence {
   customs?: { hsCode?: string; country?: string; source?: string };
   gs1?: Record<string, unknown>;
   serp?: Record<string, unknown>;
+  webSearch?: Record<string, unknown>;
   ocr?: OcrExtraction;
   productVision?: ProductVision;
   sources: SourceEvidence[];

@@ -37,6 +37,15 @@ export function ResultsPanel({ evidence, analysis }: Props) {
         {!analysis.available && analysis.reason && (
           <p className="mt-2 text-xs text-amber-400">{analysis.reason}</p>
         )}
+        {evidence.webSearch &&
+          (evidence.sources.some((s) => s.source === "serp_web" && s.status === "ok") ||
+            Boolean(
+              (evidence.webSearch as { organic_results?: unknown[] }).organic_results?.length,
+            )) && (
+            <p className="mt-2 text-xs text-sky-400/90">
+              Sintesi affinata anche con ricerca web Google (SerpApi).
+            </p>
+          )}
 
         {analysis.verifiedFacts.length > 0 && (
           <div className="mt-4">
@@ -138,6 +147,54 @@ export function ResultsPanel({ evidence, analysis }: Props) {
           </ul>
         </Card>
       )}
+
+      {evidence.webSearch &&
+        (Array.isArray(
+          (evidence.webSearch as { organic_results?: unknown[] }).organic_results,
+        ) ||
+          (evidence.webSearch as { answer_box?: { snippet?: string } }).answer_box?.snippet) && (
+          <Card title="Ricerca web (Google)">
+            {(evidence.webSearch as { query?: string }).query && (
+              <p className="mb-2 text-xs text-slate-500">
+                Query: {(evidence.webSearch as { query: string }).query}
+              </p>
+            )}
+            {(evidence.webSearch as { answer_box?: { title?: string; snippet?: string } }).answer_box
+              ?.snippet && (
+              <div className="mb-3 rounded-lg bg-slate-950 px-3 py-2 text-sm text-slate-300">
+                <span className="text-xs font-medium text-sky-400">In evidenza · </span>
+                {
+                  (evidence.webSearch as { answer_box: { snippet: string } }).answer_box.snippet
+                }
+              </div>
+            )}
+            {Array.isArray(
+              (evidence.webSearch as { organic_results?: unknown[] }).organic_results,
+            ) && (
+              <ul className="space-y-2 text-sm">
+                {(
+                  evidence.webSearch as {
+                    organic_results: Array<{
+                      title?: string;
+                      snippet?: string;
+                      source?: string;
+                    }>;
+                  }
+                ).organic_results.map((item, i) => (
+                  <li key={i} className="rounded-lg bg-slate-950 px-3 py-2 text-slate-300">
+                    <span className="text-slate-200">{item.title}</span>
+                    {item.snippet && (
+                      <p className="mt-1 text-xs leading-relaxed text-slate-400">{item.snippet}</p>
+                    )}
+                    {item.source && (
+                      <span className="mt-1 block text-xs text-slate-500">{item.source}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        )}
 
       {evidence.serp && Array.isArray(evidence.serp.shopping_results) && (
         <Card title="Google Shopping (SerpApi)">

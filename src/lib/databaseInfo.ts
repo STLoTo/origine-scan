@@ -98,12 +98,12 @@ export const DATABASE_INFO: DatabaseInfoEntry[] = [
   },
   {
     ...DATABASE_CATALOG.find((d) => d.id === "serp_api")!,
-    summary: "Google Shopping via SerpApi — listing online del prodotto.",
+    summary: "Google Shopping e ricerca web via SerpApi — listing e pagine utili per la sintesi AI.",
     contains: [
-      "Titolo e venditore",
+      "Titolo e venditore (Shopping)",
       "Prezzo e link acquisto",
-      "Eventuale «made in …» dal titolo",
-      "Fino a 5 risultati shopping",
+      "Snippet e link da ricerca Google",
+      "Answer box / knowledge graph se disponibili",
     ],
     queryHint: "Nome prodotto (+ marca consigliata). Barcode opzionale come termine aggiuntivo.",
     envKey: "SERP_API_KEY",

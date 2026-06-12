@@ -7,10 +7,45 @@ export { checkInfomaniakLlmAvailable } from "./infomaniakClient";
 const SYSTEM_PROMPT =
   "Sei un analista di trasparenza filiera produttiva. Rispondi in italiano. " +
   "Non giudicare in base al paese. Distingui fatti verificati da claim incerti. " +
+  "Se sono presenti risultati di ricerca web, usali per affinare la sintesi (marca, categoria, origine, contesto). " +
+  "Il web non è fonte assoluta: confrontalo con OCR e banche dati e segnala conflitti. " +
   "Rispondi SOLO con JSON valido, senza markdown. " +
   "verifiedFacts, uncertainClaims e conflicts devono essere array di STRINGHE, non oggetti.";
 
+function buildWebContext(webSearch?: Record<string, unknown>): string {
+  const web = webSearch as
+    | {
+        query?: string;
+        organic_results?: Array<{ title?: string; snippet?: string; source?: string }>;
+        answer_box?: { title?: string; snippet?: string };
+        knowledge_graph?: { title?: string; description?: string };
+      }
+    | undefined;
+
+  if (!web) return "";
+
+  const hasOrganic = (web.organic_results?.length ?? 0) > 0;
+  const hasAnswer = Boolean(web.answer_box?.snippet);
+  const hasKg = Boolean(web.knowledge_graph?.description);
+  if (!hasOrganic && !hasAnswer && !hasKg) return "";
+
+  return (
+    "\n\nRicerca web (Google via SerpApi — usa per affinare la sintesi, non ignorare conflitti con OCR/DB):\n" +
+    JSON.stringify(
+      {
+        query: web.query,
+        answer_box: web.answer_box,
+        knowledge_graph: web.knowledge_graph,
+        organic_results: web.organic_results?.slice(0, 5),
+      },
+      null,
+      2,
+    )
+  );
+}
+
 function buildUserPrompt(evidence: ProductEvidence): string {
+  const { webSearch, ...evidenceWithoutWeb } = evidence;
   return `Analizza queste evidenze prodotto e produci JSON:
 {
   "summary": "4-6 frasi in italiano",
@@ -21,7 +56,7 @@ function buildUserPrompt(evidence: ProductEvidence): string {
 }
 
 Evidenze:
-${JSON.stringify(evidence, null, 2)}`;
+${JSON.stringify(evidenceWithoutWeb, null, 2)}${buildWebContext(webSearch)}`;
 }
 
 function normalizeStrings(value: unknown): string[] {

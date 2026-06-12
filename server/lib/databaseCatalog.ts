@@ -84,6 +84,7 @@ export function mapSourceToCatalogId(source: string): string {
   }
   if (source.startsWith("open_beauty")) return "open_beauty_facts";
   if (source.startsWith("open_products")) return "open_products_facts";
+  if (source === "serp_web") return "serp_api";
   if (source === "ocr_label") return "open_food_facts"; // OCR non è DB esterna
   return source;
 }

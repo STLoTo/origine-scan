@@ -257,6 +257,14 @@ async function lookupGs1(barcode) {
 }
 
 // server/connectors/serpApi.ts
+function buildWebSearchQuery(brand, productName, labelKind) {
+  const base = [brand, productName].filter(Boolean).join(" ").trim();
+  if (!base) return "";
+  if (labelKind === "cleaning" || labelKind === "cosmetic") {
+    return `${base} scheda prodotto ingredienti INCI`;
+  }
+  return `${base} prodotto origine filiera`;
+}
 async function searchShopping(query, barcode) {
   if (!serverConfig.serpApiKey) {
     return {
@@ -283,6 +291,53 @@ function extractOriginFromTitle(title) {
   if (!title) return void 0;
   const match = title.match(/made in\s+([a-zA-Z\s]+)/i);
   return match ? match[1].trim() : void 0;
+}
+async function searchWeb(query, barcode) {
+  if (!serverConfig.serpApiKey) {
+    return {
+      query,
+      organic_results: [],
+      source: "serpapi",
+      note: "SERP_API_KEY non configurata \u2014 configurare in .env per risultati reali"
+    };
+  }
+  const q = barcode ? `${query} ${barcode}`.trim() : query.trim();
+  if (!q) {
+    return { query: q, organic_results: [], source: "serpapi", note: "Query vuota" };
+  }
+  const url = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(q)}&api_key=${serverConfig.serpApiKey}&gl=it&hl=it&num=5`;
+  const result = await fetchJson(url);
+  if (!result.ok || !result.data) {
+    return {
+      query: q,
+      organic_results: [],
+      source: "serpapi",
+      error: result.error
+    };
+  }
+  const organic_results = (result.data.organic_results ?? []).slice(0, 5).map((r) => ({
+    title: r.title,
+    link: r.link,
+    snippet: r.snippet,
+    source: r.source
+  }));
+  const answer_box = result.data.answer_box?.snippet ? {
+    title: result.data.answer_box.title,
+    snippet: result.data.answer_box.snippet,
+    link: result.data.answer_box.link
+  } : void 0;
+  const knowledge_graph = result.data.knowledge_graph ? {
+    title: result.data.knowledge_graph.title,
+    description: result.data.knowledge_graph.description,
+    source: result.data.knowledge_graph.source?.name
+  } : void 0;
+  return {
+    query: q,
+    organic_results,
+    answer_box,
+    knowledge_graph,
+    source: "serpapi"
+  };
 }
 
 // server/lib/productMatch.ts
@@ -721,6 +776,36 @@ async function appendSerpApi(sources, query, barcode) {
   );
   return serp;
 }
+async function appendWebSearch(sources, query, barcode) {
+  if (!serverConfig.serpApiKey) {
+    sources.push(
+      source("serp_web", "Ricerca web (SerpApi)", "not_configured", {
+        note: "Aggiungi SERP_API_KEY in .env (serpapi.com)"
+      })
+    );
+    return void 0;
+  }
+  if (!query.trim() && !barcode) {
+    sources.push(
+      source("serp_web", "Ricerca web (SerpApi)", "skipped", {
+        note: "Serve nome prodotto o barcode"
+      })
+    );
+    return void 0;
+  }
+  const { result: web, ms } = await timed(() => searchWeb(query, barcode));
+  const hasResults = (web.organic_results?.length ?? 0) > 0 || Boolean(web.answer_box?.snippet) || Boolean(web.knowledge_graph?.description);
+  sources.push(
+    source(
+      "serp_web",
+      "Ricerca web (SerpApi)",
+      web.error ? "error" : hasResults ? "ok" : "empty",
+      web,
+      ms
+    )
+  );
+  return web;
+}
 async function buildProductEvidence(input) {
   const sources = [];
   let offProduct = null;
@@ -914,7 +999,15 @@ async function buildProductEvidence(input) {
   }
   const productLabel = offProduct?.product_name ?? nameQuery ?? input.ocr?.productName ?? "";
   const serpQuery = brandQuery ? `${brandQuery} ${productLabel}`.trim() : productLabel;
-  const serp = await appendSerpApi(sources, serpQuery, barcode);
+  const webQuery = buildWebSearchQuery(
+    brandQuery,
+    productLabel || input.ocr?.productName,
+    input.ocr?.labelKind
+  );
+  const [serp, webSearch] = await Promise.all([
+    appendSerpApi(sources, serpQuery, barcode),
+    appendWebSearch(sources, webQuery || serpQuery, barcode)
+  ]);
   if (input.ocr) {
     sources.push(
       source("ocr_label", "OCR etichetta", "ok", {
@@ -985,6 +1078,7 @@ async function buildProductEvidence(input) {
     } : void 0,
     gs1: gs1Data,
     serp,
+    webSearch,
     ocr: input.ocr,
     productVision: input.productVision,
     sources
@@ -1075,8 +1169,27 @@ async function checkInfomaniakVisionAvailable() {
 }
 
 // server/lib/llm.ts
-var SYSTEM_PROMPT = "Sei un analista di trasparenza filiera produttiva. Rispondi in italiano. Non giudicare in base al paese. Distingui fatti verificati da claim incerti. Rispondi SOLO con JSON valido, senza markdown. verifiedFacts, uncertainClaims e conflicts devono essere array di STRINGHE, non oggetti.";
+var SYSTEM_PROMPT = "Sei un analista di trasparenza filiera produttiva. Rispondi in italiano. Non giudicare in base al paese. Distingui fatti verificati da claim incerti. Se sono presenti risultati di ricerca web, usali per affinare la sintesi (marca, categoria, origine, contesto). Il web non \xE8 fonte assoluta: confrontalo con OCR e banche dati e segnala conflitti. Rispondi SOLO con JSON valido, senza markdown. verifiedFacts, uncertainClaims e conflicts devono essere array di STRINGHE, non oggetti.";
+function buildWebContext(webSearch) {
+  const web = webSearch;
+  if (!web) return "";
+  const hasOrganic = (web.organic_results?.length ?? 0) > 0;
+  const hasAnswer = Boolean(web.answer_box?.snippet);
+  const hasKg = Boolean(web.knowledge_graph?.description);
+  if (!hasOrganic && !hasAnswer && !hasKg) return "";
+  return "\n\nRicerca web (Google via SerpApi \u2014 usa per affinare la sintesi, non ignorare conflitti con OCR/DB):\n" + JSON.stringify(
+    {
+      query: web.query,
+      answer_box: web.answer_box,
+      knowledge_graph: web.knowledge_graph,
+      organic_results: web.organic_results?.slice(0, 5)
+    },
+    null,
+    2
+  );
+}
 function buildUserPrompt(evidence) {
+  const { webSearch, ...evidenceWithoutWeb } = evidence;
   return `Analizza queste evidenze prodotto e produci JSON:
 {
   "summary": "4-6 frasi in italiano",
@@ -1087,7 +1200,7 @@ function buildUserPrompt(evidence) {
 }
 
 Evidenze:
-${JSON.stringify(evidence, null, 2)}`;
+${JSON.stringify(evidenceWithoutWeb, null, 2)}${buildWebContext(webSearch)}`;
 }
 function normalizeStrings(value) {
   if (!Array.isArray(value)) return [];

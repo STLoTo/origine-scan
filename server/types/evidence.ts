@@ -71,6 +71,8 @@ export interface ProductEvidence {
   };
   gs1?: Record<string, unknown>;
   serp?: Record<string, unknown>;
+  /** Risultati ricerca web Google (SerpApi) per arricchire sintesi AI */
+  webSearch?: Record<string, unknown>;
   ocr?: OcrExtraction;
   productVision?: ProductVision;
   sources: SourceEvidence[];

@@ -2,7 +2,7 @@ import { extractCertifications } from "../connectors/certifications";
 import { normalizeProductImageUrl } from "../lib/imageProxy";
 import { lookupCustoms } from "../connectors/customs";
 import { lookupGs1 } from "../connectors/gs1";
-import { searchShopping } from "../connectors/serpApi";
+import { searchShopping, searchWeb, buildWebSearchQuery } from "../connectors/serpApi";
 import { serverConfig } from "../config";
 import {
   fetchUniversalProduct,
@@ -91,6 +91,47 @@ async function appendSerpApi(
     ),
   );
   return serp;
+}
+
+async function appendWebSearch(
+  sources: SourceEvidence[],
+  query: string,
+  barcode?: string,
+): Promise<Record<string, unknown> | undefined> {
+  if (!serverConfig.serpApiKey) {
+    sources.push(
+      source("serp_web", "Ricerca web (SerpApi)", "not_configured", {
+        note: "Aggiungi SERP_API_KEY in .env (serpapi.com)",
+      }),
+    );
+    return undefined;
+  }
+
+  if (!query.trim() && !barcode) {
+    sources.push(
+      source("serp_web", "Ricerca web (SerpApi)", "skipped", {
+        note: "Serve nome prodotto o barcode",
+      }),
+    );
+    return undefined;
+  }
+
+  const { result: web, ms } = await timed(() => searchWeb(query, barcode));
+  const hasResults =
+    (web.organic_results?.length ?? 0) > 0 ||
+    Boolean(web.answer_box?.snippet) ||
+    Boolean(web.knowledge_graph?.description);
+
+  sources.push(
+    source(
+      "serp_web",
+      "Ricerca web (SerpApi)",
+      web.error ? "error" : hasResults ? "ok" : "empty",
+      web as unknown as Record<string, unknown>,
+      ms,
+    ),
+  );
+  return web as unknown as Record<string, unknown>;
 }
 
 export interface BuildEvidenceInput {
@@ -340,8 +381,16 @@ export async function buildProductEvidence(
   const serpQuery = brandQuery
     ? `${brandQuery} ${productLabel}`.trim()
     : productLabel;
+  const webQuery = buildWebSearchQuery(
+    brandQuery,
+    productLabel || input.ocr?.productName,
+    input.ocr?.labelKind,
+  );
 
-  const serp = await appendSerpApi(sources, serpQuery, barcode);
+  const [serp, webSearch] = await Promise.all([
+    appendSerpApi(sources, serpQuery, barcode),
+    appendWebSearch(sources, webQuery || serpQuery, barcode),
+  ]);
 
   if (input.ocr) {
     sources.push(
@@ -431,6 +480,7 @@ export async function buildProductEvidence(
       : undefined,
     gs1: gs1Data,
     serp: serp,
+    webSearch,
     ocr: input.ocr,
     productVision: input.productVision,
     sources,
