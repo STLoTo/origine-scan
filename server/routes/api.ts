@@ -22,31 +22,41 @@ const analyzeUpload = upload.fields([
 export const apiRouter = express.Router();
 
 apiRouter.get("/health", async (_req, res) => {
-  const [ocrOk, llmOk, databases] = await Promise.all([
-    checkInfomaniakVisionAvailable(),
-    checkInfomaniakLlmAvailable(),
-    checkDatabasesReachability(),
-  ]);
+  try {
+    const [ocrOk, llmOk, databases] = await Promise.all([
+      checkInfomaniakVisionAvailable(),
+      checkInfomaniakLlmAvailable(),
+      checkDatabasesReachability(),
+    ]);
 
-  res.json({
-    status: "ok",
-    infomaniak: {
-      configured: isInfomaniakConfigured(),
-      llmModel: serverConfig.infomaniakLlmModel,
-      visionModel: serverConfig.infomaniakVisionModel,
-      visionFallbackModel: serverConfig.infomaniakVisionFallbackModel || undefined,
-      ocrAvailable: ocrOk,
-      llmAvailable: llmOk,
-    },
-    aiProvider: serverConfig.aiProvider,
-    databases,
-  });
+    res.json({
+      status: "ok",
+      infomaniak: {
+        configured: isInfomaniakConfigured(),
+        llmModel: serverConfig.infomaniakLlmModel,
+        visionModel: serverConfig.infomaniakVisionModel,
+        visionFallbackModel: serverConfig.infomaniakVisionFallbackModel || undefined,
+        ocrAvailable: ocrOk,
+        llmAvailable: llmOk,
+      },
+      aiProvider: serverConfig.aiProvider,
+      databases,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Errore health check";
+    res.status(503).json({ status: "error", error: message });
+  }
 });
 
 /** Stato raggiungibilità banche dati (ping leggero) */
 apiRouter.get("/databases/status", async (_req, res) => {
-  const databases = await checkDatabasesReachability();
-  res.json({ databases });
+  try {
+    const databases = await checkDatabasesReachability();
+    res.json({ databases });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Errore stato banche dati";
+    res.status(503).json({ error: message });
+  }
 });
 
 /** OCR da immagine etichetta */

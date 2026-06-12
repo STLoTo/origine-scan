@@ -9,5 +9,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["server/**/*", "scripts/**/*", "api/**/*"]
+  "include": ["server/**/*", "scripts/**/*"]
 }

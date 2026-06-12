@@ -8,6 +8,9 @@ await esbuild.build({
   format: "esm",
   outfile: "api/index.js",
   packages: "external",
+  footer: {
+    js: "export const config = { maxDuration: 60 };",
+  },
 });
 
 console.log("API bundle → api/index.js");
