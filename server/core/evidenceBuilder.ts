@@ -3,7 +3,11 @@ import { lookupCustoms } from "../connectors/customs";
 import { lookupGs1 } from "../connectors/gs1";
 import { searchShopping } from "../connectors/serpApi";
 import { serverConfig } from "../config";
-import { fetchUniversalProduct, searchProductByName } from "../lib/openFactsClient";
+import {
+  fetchUniversalProduct,
+  searchProductByName,
+  type FlatOpenProduct,
+} from "../lib/openFactsClient";
 import type {
   OcrExtraction,
   ProductEvidence,
@@ -96,7 +100,7 @@ export async function buildProductEvidence(
   input: BuildEvidenceInput,
 ): Promise<ProductEvidence> {
   const sources: SourceEvidence[] = [];
-  let offProduct = null;
+  let offProduct: FlatOpenProduct | null = null;
   let barcode = input.barcode ?? input.ocr?.barcode;
   let searchMethod: ProductEvidence["searchMethod"] = "none";
   let searchQuery: string | undefined;
