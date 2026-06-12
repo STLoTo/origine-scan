@@ -1,12 +1,20 @@
 import type { AnalyzeResponse, DatabaseLamp, DatabasesStatusResponse, HealthResponse, OcrExtraction } from "../types/evidence";
-import { DATABASE_CATALOG, mergeLampsFromEvidence, type DatabaseLampStatus } from "../lib/databaseCatalog";
+import { DATABASE_CATALOG, defaultDatabaseLamps, mergeLampsFromEvidence, type DatabaseLampStatus } from "../lib/databaseCatalog";
 
 const API = "/api";
+
+async function parseJsonResponse<T>(res: Response): Promise<T> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new Error("API non raggiungibile (risposta non JSON — verifica deploy Vercel)");
+  }
+  return res.json() as Promise<T>;
+}
 
 export async function fetchHealth(): Promise<HealthResponse> {
   const res = await fetch(`${API}/health`);
   if (!res.ok) throw new Error("API non raggiungibile");
-  return res.json();
+  return parseJsonResponse<HealthResponse>(res);
 }
 
 /** Preferisce /health (include databases) per evitare 404 su server vecchi */
@@ -19,9 +27,9 @@ export async function fetchDatabasesStatus(): Promise<DatabaseLamp[]> {
   }
 
   const res = await fetch(`${API}/databases/status`);
-  if (!res.ok) return [];
-  const data: DatabasesStatusResponse = await res.json();
-  return data.databases;
+  if (!res.ok) throw new Error("Stato banche dati non disponibile");
+  const data = await parseJsonResponse<DatabasesStatusResponse>(res);
+  return data.databases ?? [];
 }
 
 export function lampsForAnalyzeStep(): DatabaseLamp[] {

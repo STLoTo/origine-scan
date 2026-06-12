@@ -43,6 +43,10 @@ export function mapSourceToCatalogId(source: string): string {
   return source;
 }
 
+export function defaultDatabaseLamps(status: DatabaseLampStatus, detail?: string): DatabaseLamp[] {
+  return DATABASE_CATALOG.map((d) => ({ id: d.id, status, detail }));
+}
+
 export function mergeLampsFromEvidence(
   base: DatabaseLamp[],
   sources: { source: string; status: string; ms?: number }[],

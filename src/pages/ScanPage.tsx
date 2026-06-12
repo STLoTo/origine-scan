@@ -10,6 +10,7 @@ import {
   mergeLampsFromEvidence,
   ocrLabel,
 } from "../api/client";
+import { defaultDatabaseLamps } from "../lib/databaseCatalog";
 import { resizeImageForOcr } from "../lib/resizeImage";
 import type { AnalyzeResponse, DatabaseLamp, HealthResponse, OcrExtraction } from "../types/evidence";
 import { Card } from "../components/Card";
@@ -41,18 +42,31 @@ export function ScanPage() {
   const [step, setStep] = useState<Step>("idle");
   const [error, setError] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [dbLamps, setDbLamps] = useState<DatabaseLamp[]>([]);
+  const [dbLamps, setDbLamps] = useState<DatabaseLamp[]>(() => defaultDatabaseLamps("loading"));
+  const [dbLoadError, setDbLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchHealth()
+    setDbLoadError(null);
+    setDbLamps(defaultDatabaseLamps("loading"));
+
+    void fetchHealth()
       .then((h) => {
         setHealth(h);
         if (h.databases?.length) setDbLamps(h.databases);
       })
       .catch(() => setHealth(null));
-    fetchDatabasesStatus()
-      .then(setDbLamps)
-      .catch(() => undefined);
+
+    void fetchDatabasesStatus()
+      .then((lamps) => {
+        if (lamps.length) setDbLamps(lamps);
+        setDbLoadError(null);
+      })
+      .catch((err: unknown) => {
+        const message =
+          err instanceof Error ? err.message : "Impossibile verificare le banche dati";
+        setDbLoadError(message);
+        setDbLamps(defaultDatabaseLamps("offline", "API non raggiungibile"));
+      });
   }, []);
 
   useEffect(() => {
@@ -175,6 +189,12 @@ export function ScanPage() {
 
       <Card title="Banche dati — stato collegamento" className="mb-6">
         <p className="mb-4 text-sm leading-relaxed text-slate-400">{DATABASE_INTRO_SHORT}</p>
+        {dbLoadError && (
+          <div className="mb-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+            {dbLoadError} — controlla che l&apos;API Vercel sia attiva e che le variabili d&apos;ambiente
+            siano configurate.
+          </div>
+        )}
         <DatabaseStatusGrid lamps={dbLamps} />
         <DatabaseInfoPanel />
       </Card>
