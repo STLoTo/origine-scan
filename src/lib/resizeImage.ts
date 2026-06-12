@@ -1,4 +1,4 @@
-/** Riduce foto etichetta prima dell'upload (evita errori Ollama su immagini enormi) */
+/** Riduce foto etichetta prima dell'upload (evita errori API su immagini enormi) */
 export async function resizeImageForOcr(file: File, maxSide = 1600): Promise<File> {
   if (!file.type.startsWith("image/")) return file;
 

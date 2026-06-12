@@ -3,6 +3,7 @@ import { analyzeBarcode, analyzeFromOcr, analyzeImage, fetchDatabasesStatus, fet
 import { resizeImageForOcr } from "../lib/resizeImage";
 import type { AnalyzeResponse, DatabaseLamp, HealthResponse, OcrExtraction } from "../types/evidence";
 import { Card } from "../components/Card";
+import { DatabaseInfoPanel } from "../components/DatabaseInfoPanel";
 import { DatabaseStatusGrid } from "../components/DatabaseStatusGrid";
 import { ResultsPanel } from "../components/ResultsPanel";
 
@@ -97,8 +98,8 @@ export function ScanPage() {
         </p>
         {health && (
           <div className="mt-3 flex flex-wrap gap-2 text-xs">
-            <Badge ok={health.ollama.ocrAvailable} label={`OCR ${health.ollama.ocrModel}`} />
-            <Badge ok={health.ollama.llmAvailable} label={`LLM ${health.ollama.llmModel}`} />
+            <Badge ok={health.infomaniak.ocrAvailable} label={`OCR ${health.infomaniak.visionModel}`} />
+            <Badge ok={health.infomaniak.llmAvailable} label={`LLM ${health.infomaniak.llmModel}`} />
           </div>
         )}
       </header>
@@ -110,6 +111,7 @@ export function ScanPage() {
           GS1, certificazioni e dogana solo <strong className="text-slate-400">EAN</strong>.
         </p>
         <DatabaseStatusGrid lamps={dbLamps} />
+        <DatabaseInfoPanel />
       </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">

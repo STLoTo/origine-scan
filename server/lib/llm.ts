@@ -1,5 +1,8 @@
 import { serverConfig } from "../config";
+import { chatCompletion, isInfomaniakConfigured } from "./infomaniakClient";
 import type { AiAnalysis, ProductEvidence } from "../types/evidence";
+
+export { checkInfomaniakLlmAvailable } from "./infomaniakClient";
 
 const SYSTEM_PROMPT =
   "Sei un analista di trasparenza filiera produttiva. Rispondi in italiano. " +
@@ -84,56 +87,17 @@ function fallbackAnalysis(text: string, provider: string, model: string): AiAnal
   };
 }
 
-async function callOllama(evidence: ProductEvidence): Promise<AiAnalysis> {
-  const model = serverConfig.ollamaModel;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), serverConfig.llmTimeoutMs);
-
-  try {
-    const res = await fetch(`${serverConfig.ollamaBaseUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model,
-        stream: false,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: buildUserPrompt(evidence) },
-        ],
-      }),
-    });
-
-    if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
-    const data = (await res.json()) as { message?: { content?: string } };
-    return parseAnalysis(data.message?.content ?? "", "ollama", model);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function callOpenAi(evidence: ProductEvidence): Promise<AiAnalysis> {
-  const model = serverConfig.openAiModel;
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${serverConfig.openAiApiKey}`,
-    },
-    signal: AbortSignal.timeout(serverConfig.llmTimeoutMs),
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: buildUserPrompt(evidence) },
-      ],
-      temperature: 0.3,
-    }),
+async function callInfomaniak(evidence: ProductEvidence): Promise<AiAnalysis> {
+  const model = serverConfig.infomaniakLlmModel;
+  const content = await chatCompletion({
+    model,
+    temperature: 0.3,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: buildUserPrompt(evidence) },
+    ],
   });
-
-  if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}`);
-  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-  return parseAnalysis(data.choices?.[0]?.message?.content ?? "", "openai", model);
+  return parseAnalysis(content, "infomaniak", model);
 }
 
 function templateAnalysis(evidence: ProductEvidence): AiAnalysis {
@@ -141,7 +105,7 @@ function templateAnalysis(evidence: ProductEvidence): AiAnalysis {
   const sources = evidence.sources.filter((s) => s.status === "ok").map((s) => s.label);
   return {
     available: false,
-    summary: `${name}: raccolte evidenze da ${sources.length} fonti (${sources.join(", ") || "nessuna"}). AI non disponibile — configura Ollama o OpenAI.`,
+    summary: `${name}: raccolte evidenze da ${sources.length} fonti (${sources.join(", ") || "nessuna"}). AI non disponibile — configura Infomaniak API.`,
     transparencyLevel: sources.length >= 3 ? "medium" : "low",
     verifiedFacts: sources.length
       ? [`Dati presenti su: ${sources.join(", ")}`]
@@ -155,28 +119,13 @@ function templateAnalysis(evidence: ProductEvidence): AiAnalysis {
 export async function analyzeWithAi(evidence: ProductEvidence): Promise<AiAnalysis> {
   if (serverConfig.aiProvider === "none") return templateAnalysis(evidence);
 
+  if (!isInfomaniakConfigured()) return templateAnalysis(evidence);
+
   try {
-    if (serverConfig.aiProvider === "openai" && serverConfig.openAiApiKey) {
-      return await callOpenAi(evidence);
-    }
-    if (serverConfig.aiProvider === "ollama" || !serverConfig.openAiApiKey) {
-      return await callOllama(evidence);
-    }
-    return templateAnalysis(evidence);
+    return await callInfomaniak(evidence);
   } catch (err) {
     const reason = err instanceof Error ? err.message : "Errore LLM";
     const base = templateAnalysis(evidence);
     return { ...base, reason };
-  }
-}
-
-export async function checkOllamaLlmAvailable(): Promise<boolean> {
-  try {
-    const res = await fetch(`${serverConfig.ollamaBaseUrl}/api/tags`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    return res.ok;
-  } catch {
-    return false;
   }
 }

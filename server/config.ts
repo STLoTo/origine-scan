@@ -7,12 +7,15 @@ export const serverConfig = {
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS ?? 12000),
   userAgent: "OrigineScan/0.4 (product-evidence)",
 
-  aiProvider: (process.env.AI_PROVIDER ?? "ollama") as "ollama" | "openai" | "none",
-  ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? "http://localhost:11434",
-  ollamaModel: process.env.OLLAMA_MODEL ?? "llama3.2:latest",
-  ollamaOcrModel: process.env.OLLAMA_OCR_MODEL ?? "glm-ocr:latest",
-  ollamaOcrFallbackModel: process.env.OLLAMA_OCR_FALLBACK_MODEL ?? "qwen3.5:4b",
-  openAiApiKey: process.env.OPENAI_API_KEY ?? "",
-  openAiModel: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+  aiProvider: (process.env.AI_PROVIDER ?? "infomaniak") as "infomaniak" | "none",
+  infomaniakApiToken: process.env.INFOMANIAK_API_TOKEN ?? "",
+  infomaniakProductId: process.env.INFOMANIAK_PRODUCT_ID ?? "",
+  infomaniakBaseUrl: process.env.INFOMANIAK_BASE_URL ?? "https://api.infomaniak.com",
+  infomaniakLlmModel: process.env.INFOMANIAK_LLM_MODEL ?? "qwen3",
+  /** Ministral 14B: multimodale, leggero, supporta IT — ideale per OCR etichette */
+  infomaniakVisionModel:
+    process.env.INFOMANIAK_VISION_MODEL ?? "mistralai/Ministral-3-14B-Instruct-2512",
+  infomaniakVisionFallbackModel:
+    process.env.INFOMANIAK_VISION_FALLBACK_MODEL ?? "Qwen/Qwen3.5-122B-A10B-FP8",
   llmTimeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? 90000),
 };

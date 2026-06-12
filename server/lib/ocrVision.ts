@@ -1,17 +1,19 @@
 import { serverConfig } from "../config";
+import {
+  chatCompletion,
+  isInfomaniakConfigured,
+  type ChatContentPart,
+} from "./infomaniakClient";
 import type { OcrExtraction } from "../types/evidence";
 
-/** Prompt ufficiale GLM-OCR — non usare JSON nel prompt vision */
-const GLM_OCR_PROMPT = "Text Recognition:";
+export { checkInfomaniakVisionAvailable } from "./infomaniakClient";
 
-const VISION_CHAT_PROMPT =
-  "Leggi tutto il testo visibile in questa etichetta prodotto. " +
-  "Restituisci solo il testo letto, riga per riga, senza commenti.";
-
-function isSpecialistOcrModel(model: string): boolean {
-  const base = model.split(":")[0].toLowerCase();
-  return base.includes("glm-ocr") || base.includes("deepseek-ocr");
-}
+const VISION_PROMPT =
+  "Trascrivi fedelmente tutto il testo visibile in questa etichetta alimentare. " +
+  "Includi: nome prodotto, marca, ingredienti, allergeni, codice a barre/EAN, peso netto, " +
+  "certificazioni (bio, vegan, DOP, IGP, ecc.) e origine (prodotto in / made in). " +
+  "Mantieni l'ordine e le righe originali. " +
+  "Restituisci SOLO il testo trascritto, senza commenti né markdown.";
 
 function extractBarcode(text: string): string | undefined {
   const matches = text.match(/\b(\d{8}|\d{12,14})\b/g);
@@ -70,82 +72,37 @@ function cleanOcrOutput(text: string): string {
     .trim();
 }
 
-async function readOllamaError(res: Response): Promise<string> {
-  try {
-    const body = (await res.json()) as { error?: string };
-    return body.error ?? res.statusText;
-  } catch {
-    return res.statusText;
-  }
+function visionMessage(base64: string, mimeType: string): ChatContentPart[] {
+  return [
+    { type: "text", text: VISION_PROMPT },
+    {
+      type: "image_url",
+      image_url: { url: `data:${mimeType};base64,${base64}` },
+    },
+  ];
 }
 
-/** glm-ocr / deepseek-ocr: endpoint nativo /api/generate */
-async function ollamaGenerateOcr(model: string, base64: string): Promise<string> {
-  const res = await fetch(`${serverConfig.ollamaBaseUrl}/api/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(serverConfig.llmTimeoutMs),
-    body: JSON.stringify({
-      model,
-      prompt: GLM_OCR_PROMPT,
-      images: [base64],
-      stream: false,
-      options: {
-        num_predict: 2048,
-        temperature: 0.1,
-      },
-    }),
+async function runVisionOcr(model: string, base64: string, mimeType: string): Promise<string> {
+  const content = await chatCompletion({
+    model,
+    temperature: 0.1,
+    maxCompletionTokens: 2048,
+    messages: [{ role: "user", content: visionMessage(base64, mimeType) }],
   });
-
-  if (!res.ok) {
-    const detail = await readOllamaError(res);
-    throw new Error(`Ollama generate ${res.status}: ${detail}`);
-  }
-
-  const data = (await res.json()) as { response?: string };
-  return cleanOcrOutput(data.response ?? "");
+  return cleanOcrOutput(content);
 }
 
-/** Modelli vision generici (qwen, llava…): /api/chat */
-async function ollamaChatVision(model: string, base64: string): Promise<string> {
-  const res = await fetch(`${serverConfig.ollamaBaseUrl}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(serverConfig.llmTimeoutMs),
-    body: JSON.stringify({
-      model,
-      stream: false,
-      messages: [
-        {
-          role: "user",
-          content: VISION_CHAT_PROMPT,
-          images: [base64],
-        },
-      ],
-    }),
-  });
-
-  if (!res.ok) {
-    const detail = await readOllamaError(res);
-    throw new Error(`Ollama chat ${res.status}: ${detail}`);
-  }
-
-  const data = (await res.json()) as { message?: { content?: string } };
-  return cleanOcrOutput(data.message?.content ?? "");
-}
-
-async function runOcrWithModel(model: string, base64: string): Promise<string> {
-  if (isSpecialistOcrModel(model)) {
-    return ollamaGenerateOcr(model, base64);
-  }
-  return ollamaChatVision(model, base64);
-}
-
-/** OCR etichetta via Ollama vision */
+/** OCR etichetta via Infomaniak vision (chat multimodale) */
 export async function extractTextFromImage(
   imageBuffer: Buffer,
   mimeType = "image/jpeg",
 ): Promise<OcrExtraction> {
+  if (!isInfomaniakConfigured()) {
+    throw new Error(
+      "Infomaniak API non configurata. Imposta INFOMANIAK_API_TOKEN e INFOMANIAK_PRODUCT_ID nel .env",
+    );
+  }
+
   const allowed = ["image/jpeg", "image/png", "image/webp"];
   if (!allowed.includes(mimeType)) {
     throw new Error(
@@ -158,21 +115,21 @@ export async function extractTextFromImage(
   }
 
   const base64 = imageBuffer.toString("base64");
-  const primary = serverConfig.ollamaOcrModel;
-  const fallback = serverConfig.ollamaOcrFallbackModel;
+  const primary = serverConfig.infomaniakVisionModel;
+  const fallback = serverConfig.infomaniakVisionFallbackModel;
 
   let rawText = "";
   let usedModel = primary;
 
   try {
-    rawText = await runOcrWithModel(primary, base64);
+    rawText = await runVisionOcr(primary, base64, mimeType);
     if (!rawText.trim() && fallback && fallback !== primary) {
-      rawText = await runOcrWithModel(fallback, base64);
+      rawText = await runVisionOcr(fallback, base64, mimeType);
       usedModel = fallback;
     }
   } catch (primaryErr) {
     if (!fallback || fallback === primary) throw primaryErr;
-    rawText = await runOcrWithModel(fallback, base64);
+    rawText = await runVisionOcr(fallback, base64, mimeType);
     usedModel = fallback;
   }
 
@@ -190,25 +147,7 @@ export async function extractTextFromImage(
     ingredients: enriched.ingredients,
     originClaims: enriched.originClaims ?? [],
     labelClaims: enriched.labelClaims ?? [],
-    provider: "ollama",
+    provider: "infomaniak",
     model: usedModel,
   };
-}
-
-export async function checkOllamaOcrAvailable(): Promise<boolean> {
-  try {
-    const res = await fetch(`${serverConfig.ollamaBaseUrl}/api/tags`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!res.ok) return false;
-    const data = (await res.json()) as { models?: { name: string }[] };
-    const names = data.models?.map((m) => m.name) ?? [];
-    const has = (model: string) => {
-      const base = model.split(":")[0];
-      return names.some((n) => n.startsWith(base));
-    };
-    return has(serverConfig.ollamaOcrModel) || has(serverConfig.ollamaOcrFallbackModel);
-  } catch {
-    return false;
-  }
 }

@@ -1,8 +1,9 @@
 import express from "express";
 import multer from "multer";
 import { buildProductEvidence } from "../core/evidenceBuilder";
-import { analyzeWithAi, checkOllamaLlmAvailable } from "../lib/llm";
-import { checkOllamaOcrAvailable, extractTextFromImage } from "../lib/ocrVision";
+import { analyzeWithAi, checkInfomaniakLlmAvailable } from "../lib/llm";
+import { checkInfomaniakVisionAvailable, extractTextFromImage } from "../lib/ocrVision";
+import { isInfomaniakConfigured } from "../lib/infomaniakClient";
 import { checkDatabasesReachability } from "../lib/databaseHealth";
 import { serverConfig } from "../config";
 import type { AnalyzeResponse } from "../types/evidence";
@@ -16,18 +17,18 @@ export const apiRouter = express.Router();
 
 apiRouter.get("/health", async (_req, res) => {
   const [ocrOk, llmOk, databases] = await Promise.all([
-    checkOllamaOcrAvailable(),
-    checkOllamaLlmAvailable(),
+    checkInfomaniakVisionAvailable(),
+    checkInfomaniakLlmAvailable(),
     checkDatabasesReachability(),
   ]);
 
   res.json({
     status: "ok",
-    ollama: {
-      baseUrl: serverConfig.ollamaBaseUrl,
-      ocrModel: serverConfig.ollamaOcrModel,
-      ocrFallbackModel: serverConfig.ollamaOcrFallbackModel,
-      llmModel: serverConfig.ollamaModel,
+    infomaniak: {
+      configured: isInfomaniakConfigured(),
+      llmModel: serverConfig.infomaniakLlmModel,
+      visionModel: serverConfig.infomaniakVisionModel,
+      visionFallbackModel: serverConfig.infomaniakVisionFallbackModel || undefined,
       ocrAvailable: ocrOk,
       llmAvailable: llmOk,
     },
@@ -57,7 +58,7 @@ apiRouter.post("/ocr/label", upload.single("image"), async (req, res) => {
     res.status(503).json({
       success: false,
       error: message,
-      hint: "glm-ocr usa /api/generate. Verifica: ollama serve attivo, ollama pull glm-ocr, fallback qwen3.5:4b",
+      hint: "Verifica token/product_id e INFOMANIAK_VISION_MODEL (es. mistralai/Ministral-3-14B-Instruct-2512)",
     });
   }
 });

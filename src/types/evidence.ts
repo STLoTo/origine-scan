@@ -66,11 +66,13 @@ export interface AnalyzeResponse {
 
 export interface HealthResponse {
   status: string;
-  ollama: {
+  infomaniak: {
+    configured: boolean;
     ocrAvailable: boolean;
     llmAvailable: boolean;
-    ocrModel: string;
+    visionModel: string;
     llmModel: string;
+    visionFallbackModel?: string;
   };
   aiProvider: string;
   databases?: DatabaseLamp[];
