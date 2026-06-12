@@ -1,4 +1,5 @@
 import { extractCertifications } from "../connectors/certifications";
+import { normalizeProductImageUrl } from "../lib/imageProxy";
 import { lookupCustoms } from "../connectors/customs";
 import { lookupGs1 } from "../connectors/gs1";
 import { searchShopping } from "../connectors/serpApi";
@@ -313,7 +314,7 @@ export async function buildProductEvidence(
         input.productVision?.brand ??
         (gs1Data?.company_name as string | undefined),
       category: offProduct?.categories ?? input.productVision?.category,
-      imageUrl: offProduct?.image_url,
+      imageUrl: normalizeProductImageUrl(offProduct?.image_url),
     },
     composition: {
       ingredients: offProduct?.ingredients_text ?? input.ocr?.ingredients,

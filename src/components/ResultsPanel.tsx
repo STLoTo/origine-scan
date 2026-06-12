@@ -2,6 +2,7 @@ import type { AiAnalysis, ProductEvidence } from "../types/evidence";
 import { DATABASE_CATALOG, mergeLampsFromEvidence } from "../lib/databaseCatalog";
 import { Card } from "./Card";
 import { DatabaseStatusGrid } from "./DatabaseStatusGrid";
+import { ProductImage } from "./ProductImage";
 import { ProductSummaryCard } from "./ProductSummaryCard";
 import { TransparencyBadge } from "./TransparencyBadge";
 
@@ -84,13 +85,11 @@ export function ResultsPanel({ evidence, analysis }: Props) {
           <Row label="Categoria" value={evidence.identity.category} />
           <Row label="Barcode" value={evidence.barcode} mono />
         </dl>
-        {evidence.identity.imageUrl && (
-          <img
-            src={evidence.identity.imageUrl}
-            alt=""
-            className="mt-3 max-h-40 rounded-lg border border-slate-700 object-contain"
-          />
-        )}
+        <ProductImage
+          url={evidence.identity.imageUrl}
+          alt=""
+          className="mt-3 max-h-40 rounded-lg border border-slate-700 object-contain"
+        />
       </Card>
 
       {evidence.composition?.ingredients && (

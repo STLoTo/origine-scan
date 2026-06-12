@@ -6,6 +6,11 @@ import { checkInfomaniakVisionAvailable, extractTextFromImage } from "../lib/ocr
 import { describeProductFromImages, maxProductImages } from "../lib/productVision";
 import { isInfomaniakConfigured } from "../lib/infomaniakClient";
 import { checkDatabasesReachability } from "../lib/databaseHealth";
+import {
+  fetchProductImage,
+  isAllowedProductImageUrl,
+  normalizeProductImageUrl,
+} from "../lib/imageProxy";
 import { serverConfig } from "../config";
 import type { AnalyzeResponse } from "../types/evidence";
 
@@ -76,6 +81,31 @@ apiRouter.post("/ocr/label", upload.single("image"), async (req, res) => {
       error: message,
       hint: "Verifica token/product_id e INFOMANIAK_VISION_MODEL (es. mistralai/Ministral-3-14B-Instruct-2512)",
     });
+  }
+});
+
+/** Proxy immagini prodotto (Open Facts) — evita 403 hotlink nel browser */
+apiRouter.get("/image/proxy", async (req, res) => {
+  const rawUrl = String(req.query.url ?? "").trim();
+  const url = normalizeProductImageUrl(rawUrl);
+
+  if (!url || !isAllowedProductImageUrl(url)) {
+    res.status(400).json({ error: "URL immagine non valido o non consentito" });
+    return;
+  }
+
+  try {
+    const result = await fetchProductImage(url);
+    if (!result.ok) {
+      res.status(result.status === 403 ? 404 : result.status).end();
+      return;
+    }
+
+    res.setHeader("Content-Type", result.contentType);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(result.buffer);
+  } catch {
+    res.status(502).json({ error: "Impossibile recuperare l'immagine" });
   }
 });
 

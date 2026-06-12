@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { ProductEvidence } from "../types/evidence";
 import { DATABASE_CATALOG } from "../lib/databaseCatalog";
 import { Card } from "./Card";
+import { ProductImage } from "./ProductImage";
 
 interface Props {
   evidence: ProductEvidence;
@@ -59,13 +60,11 @@ export function ProductSummaryCard({ evidence }: Props) {
   return (
     <Card title="Scheda prodotto" className="border-emerald-500/30 bg-gradient-to-br from-slate-900/90 to-emerald-950/20">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-        {identity.imageUrl && (
-          <img
-            src={identity.imageUrl}
-            alt={identity.name ?? "Prodotto"}
-            className="mx-auto h-32 w-32 shrink-0 rounded-xl border border-slate-700 object-contain sm:mx-0"
-          />
-        )}
+        <ProductImage
+          url={identity.imageUrl}
+          alt={identity.name ?? "Prodotto"}
+          className="mx-auto h-32 w-32 shrink-0 rounded-xl border border-slate-700 object-contain sm:mx-0"
+        />
         <div className="min-w-0 flex-1">
           {identity.name && (
             <h3 className="text-lg font-semibold leading-snug text-slate-100">{identity.name}</h3>
