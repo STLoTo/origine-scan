@@ -16,6 +16,8 @@ export interface OcrExtraction {
   productName?: string;
   brand?: string;
   ingredients?: string;
+  labelKind?: "food" | "cosmetic" | "cleaning" | "unknown";
+  warnings?: string[];
   originClaims: string[];
   labelClaims: string[];
   provider: string;

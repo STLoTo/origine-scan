@@ -154,7 +154,11 @@ export async function buildProductEvidence(
   if (!barcode && nameQuery) {
     searchQuery = brandQuery ? `${brandQuery} ${nameQuery}` : nameQuery;
     const { result: nameHit, ms } = await timed(() =>
-      searchProductByName(nameQuery, { brand: brandQuery, ocrText: ocrRawText }),
+      searchProductByName(nameQuery, {
+        brand: brandQuery,
+        ocrText: ocrRawText,
+        labelKind: input.ocr?.labelKind,
+      }),
     );
 
     if (nameHit) {

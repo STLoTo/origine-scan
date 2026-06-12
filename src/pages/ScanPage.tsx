@@ -374,17 +374,42 @@ export function ScanPage() {
           {ocr && (
             <Card title="Testo estratto (OCR)">
               <dl className="mb-3 grid gap-2 text-sm">
+                {ocr.labelKind && ocr.labelKind !== "unknown" && (
+                  <Meta
+                    label="Tipo etichetta"
+                    value={
+                      ocr.labelKind === "cleaning"
+                        ? "Detergente / igienizzante"
+                        : ocr.labelKind === "cosmetic"
+                          ? "Cosmetico"
+                          : "Alimentare"
+                    }
+                  />
+                )}
                 {ocr.productName && <Meta label="Nome" value={ocr.productName} />}
                 {ocr.brand && <Meta label="Marca" value={ocr.brand} />}
                 {ocr.barcode && <Meta label="Barcode" value={ocr.barcode} mono />}
               </dl>
+              {ocr.warnings && ocr.warnings.length > 0 && (
+                <ul className="mb-3 space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                  {ocr.warnings.map((w) => (
+                    <li key={w}>⚠ {w}</li>
+                  ))}
+                </ul>
+              )}
               <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-3 text-xs leading-relaxed text-slate-300">
                 {ocr.rawText}
               </pre>
               {ocr.ingredients && (
                 <p className="mt-2 text-xs text-slate-400">
-                  <span className="text-slate-500">Ingredienti: </span>
-                  {ocr.ingredients}
+                  <span className="text-slate-500">Ingredienti (estratto): </span>
+                  {ocr.ingredients.length > 400 ? `${ocr.ingredients.slice(0, 400)}…` : ocr.ingredients}
+                </p>
+              )}
+              {!ocr.productName && !ocr.brand && (
+                <p className="mt-2 text-xs text-amber-400">
+                  Nome/marca non rilevati — questa foto sembra solo avvertenze o INCI. Scatta anche il fronte
+                  confezione o aggiungi foto prodotto.
                 </p>
               )}
               {ocr.barcode ? (
@@ -394,7 +419,10 @@ export function ScanPage() {
               ) : (
                 <p className="mt-2 text-xs text-amber-400">
                   Nessun barcode — verrà tentata ricerca per <strong>nome prodotto</strong> su Open Facts
-                  (GS1/dogana solo con EAN).
+                  {ocr.labelKind === "cleaning" || ocr.labelKind === "cosmetic"
+                    ? " (Beauty / Products, non alimentare)"
+                    : " (GS1/dogana solo con EAN)"}
+                  .
                 </p>
               )}
             </Card>

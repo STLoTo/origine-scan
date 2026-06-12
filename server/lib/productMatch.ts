@@ -24,6 +24,10 @@ const HARD_CONFLICTS: Array<{ ocr: RegExp; db: RegExp }> = [
   { ocr: /\btofu\b/i, db: /\b(nocciol|hazelnut|cacao|spalmab|spread|crema)\b/i },
   { ocr: /\byogurt\b/i, db: /\b(pasta|ragù|sugo)\b/i },
   { ocr: /\blatte\b/i, db: /\b(tofu|seitan)\b/i },
+  {
+    ocr: /agents de surface|sodium laureth|tenside|detergent|nettoyant|surface active/i,
+    db: /\b(chocolate|nutella|pasta|yogurt|tofu|cheese|fromage|biscuit|snack)\b/i,
+  },
 ];
 
 function normalizeText(text: string): string {

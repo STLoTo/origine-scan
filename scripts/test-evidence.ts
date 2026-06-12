@@ -110,6 +110,22 @@ VALSOIA
   };
   await runCase("Valsoia Tofu (anti-mismatch)", { ocr: valsoiaOcr });
 
+  const detergentOcr: OcrExtraction = {
+    rawText: `NE PAS faire vomir. Tenir hors de portée des enfants.
+Ingrédients:
+Agents de surface anioniques: >30% Sodium Laureth Sulfate.
+Eau, Parfum, Limonene, Linalool.`,
+    productName: undefined,
+    brand: undefined,
+    labelKind: "cleaning",
+    warnings: ["Etichetta detergente rilevata"],
+    originClaims: [],
+    labelClaims: [],
+    provider: "test",
+    model: "simulated",
+  };
+  await runCase("Detergente (no nome, INCI)", { ocr: detergentOcr });
+
   console.log("\n" + "=".repeat(60));
 }
 

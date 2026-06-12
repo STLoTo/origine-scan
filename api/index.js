@@ -307,7 +307,11 @@ var STOP_WORDS = /* @__PURE__ */ new Set([
 var HARD_CONFLICTS = [
   { ocr: /\btofu\b/i, db: /\b(nocciol|hazelnut|cacao|spalmab|spread|crema)\b/i },
   { ocr: /\byogurt\b/i, db: /\b(pasta|ragù|sugo)\b/i },
-  { ocr: /\blatte\b/i, db: /\b(tofu|seitan)\b/i }
+  { ocr: /\blatte\b/i, db: /\b(tofu|seitan)\b/i },
+  {
+    ocr: /agents de surface|sodium laureth|tenside|detergent|nettoyant|surface active/i,
+    db: /\b(chocolate|nutella|pasta|yogurt|tofu|cheese|fromage|biscuit|snack)\b/i
+  }
 ];
 function normalizeText(text) {
   return text.toLowerCase().normalize("NFD").replace(new RegExp("\\p{M}", "gu"), "").replace(/[^\p{L}\p{N}\s]/gu, " ");
@@ -400,16 +404,26 @@ async function fetchUniversalProduct(barcode) {
 async function fetchOpenFoodFacts(barcode) {
   return fetchFromBase("https://world.openfoodfacts.org", "open_food_facts", barcode);
 }
+var ALL_DATABASES = [
+  { base: "https://world.openfoodfacts.org", label: "open_food_facts" },
+  { base: "https://world.openbeautyfacts.org", label: "open_beauty_facts" },
+  { base: "https://world.openproductsfacts.org", label: "open_products_facts" }
+];
+function databasesForLabelKind(labelKind) {
+  if (labelKind === "cleaning") {
+    return [ALL_DATABASES[2], ALL_DATABASES[1], ALL_DATABASES[0]];
+  }
+  if (labelKind === "cosmetic") {
+    return [ALL_DATABASES[1], ALL_DATABASES[2], ALL_DATABASES[0]];
+  }
+  return [...ALL_DATABASES];
+}
 async function searchProductByName(name, brandOrOptions, legacyBrand) {
   const options = typeof brandOrOptions === "string" ? { brand: brandOrOptions ?? legacyBrand } : brandOrOptions ?? { brand: legacyBrand };
   const brand = options.brand;
   const query = [brand, name].filter(Boolean).join(" ").trim();
   if (query.length < 2) return null;
-  const bases = [
-    { base: "https://world.openfoodfacts.org", label: "open_food_facts" },
-    { base: "https://world.openbeautyfacts.org", label: "open_beauty_facts" },
-    { base: "https://world.openproductsfacts.org", label: "open_products_facts" }
-  ];
+  const bases = databasesForLabelKind(options.labelKind);
   let best = null;
   for (const source2 of bases) {
     const url = `${source2.base}/cgi/search.pl?search_terms=${encodeURIComponent(query)}&search_simple=1&action=process&json=1&page_size=5`;
@@ -455,6 +469,99 @@ function sanitizeBarcode(code) {
   return isValidEan(digits) ? digits : void 0;
 }
 
+// server/lib/ocrTextAnalysis.ts
+var INGREDIENTS_HEADER = /^(?:ingredienti|ingredients|ingr[eé]dients|inhaltsstoffe|zutaten|composition)\s*:?\s*$/i;
+var INGREDIENTS_INLINE = /(?:ingredienti|ingredients|ingr[eé]dients|inhaltsstoffe|zutaten|composition)\s*:?\s*/i;
+var INGREDIENTS_STOP = /^(?:allerg[eè]nes?|allergens|allergeni|inhaltsstoffe|zutaten|conservare|conservation|netto|peso|tenir|keep out|en cas de|ne pas)\b/i;
+var SAFETY_LINE = /^(?:en cas de|ne pas |tenir hors|appeler un|pr[eé]venir les|ne pas donner|n cas de|in case of|keep out|call a doctor|bei kontakt|achtung|warning|danger|attention|irritation|intoxic|vomit|m[eé]decin|antipoison|lentilles|rincer|laver à l)/i;
+var CLEANING_SIGNALS = /agents de surface|tenside|sodium laureth|sodium lauryl|detergent|nettoyant|liquide vaisselle|household|cleaning|surface active|waschmittel|reinigungsmittel/i;
+var COSMETIC_SIGNALS = /parfum|aqua\/water|shampoo|shower gel|body wash|cosm[eé]tique|capelli|corpo|viso|lotion|cr[eè]me douche/i;
+var FOOD_SIGNALS = /(?:^|\n)ingredienti\b|allergeni|nutri(?:tion|ente)|kcal|kj\b|prodotto in|made in|fabbricato in|vegan food|aliment/i;
+var HALLUCINATED_TRIDECETH = /Sodium Trideceth-(?:[4-9]\d{2,}|\d{4,})\s+Sulfate/gi;
+function cleanLine(line) {
+  return line.replace(/\s+/g, " ").trim();
+}
+function isSafetyOrInstructionLine(line) {
+  const trimmed = cleanLine(line);
+  if (trimmed.length < 3) return true;
+  return SAFETY_LINE.test(trimmed);
+}
+function detectLabelKind(text) {
+  if (CLEANING_SIGNALS.test(text)) return "cleaning";
+  if (COSMETIC_SIGNALS.test(text)) return "cosmetic";
+  if (FOOD_SIGNALS.test(text)) return "food";
+  if (/inhaltsstoffe|ingr[eé]dients/i.test(text) && /parfum|aqua|tenside|surface/i.test(text)) {
+    return "cleaning";
+  }
+  return "unknown";
+}
+function sanitizeHallucinatedOcr(rawText) {
+  const warnings = [];
+  let text = rawText;
+  if (HALLUCINATED_TRIDECETH.test(rawText)) {
+    warnings.push(
+      "Possibile allucinazione OCR: lista tensioattivi con numeri implausibili (es. Trideceth-10000). Verifica l'etichetta originale."
+    );
+    text = text.replace(HALLUCINATED_TRIDECETH, "");
+    text = text.replace(/,\s*,/g, ", ").replace(/\s{2,}/g, " ");
+  }
+  const tridecethCount = (rawText.match(/Sodium Trideceth-\d+/gi) ?? []).length;
+  if (tridecethCount > 12) {
+    warnings.push(
+      `Lista ingredienti sospetta: ${tridecethCount} varianti \xABSodium Trideceth-*\xBB \u2014 probabile errore OCR.`
+    );
+  }
+  return { text: text.trim(), warnings };
+}
+function extractIngredientsBlock(rawText) {
+  const multiline = rawText.match(
+    /(?:ingredienti|ingredients|ingr[eé]dients|inhaltsstoffe|zutaten|composition)\s*:?\s*\n([\s\S]{10,2000}?)(?:\n\s*\n|\n(?:allerg[eè]nes?|allergens|allergeni|inhaltsstoffe|zutaten|tenir|keep out)\b|$)/i
+  );
+  if (multiline?.[1]?.trim()) {
+    return multiline[1].replace(/\s+/g, " ").replace(/,\s*,/g, ", ").trim().slice(0, 1500);
+  }
+  const lines = rawText.split("\n").map(cleanLine);
+  const blocks = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const inline = line.match(
+      new RegExp(`${INGREDIENTS_INLINE.source}(.+)`, "i")
+    );
+    if (inline?.[1]?.trim()) {
+      blocks.push(inline[1].trim());
+      continue;
+    }
+    if (!INGREDIENTS_HEADER.test(line)) continue;
+    const chunk = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j];
+      if (!next) continue;
+      if (INGREDIENTS_HEADER.test(next) || INGREDIENTS_STOP.test(next)) break;
+      if (isSafetyOrInstructionLine(next)) break;
+      chunk.push(next);
+      if (chunk.join(" ").length > 1200) break;
+    }
+    if (chunk.length) blocks.push(chunk.join(" "));
+  }
+  if (!blocks.length) return void 0;
+  const merged = blocks[0].replace(/\s+/g, " ").replace(/,\s*,/g, ", ").trim();
+  return merged.length >= 10 ? merged.slice(0, 1500) : void 0;
+}
+function analyzeOcrText(rawText) {
+  const { text: cleanedText, warnings } = sanitizeHallucinatedOcr(rawText);
+  const labelKind = detectLabelKind(cleanedText);
+  const ingredients = extractIngredientsBlock(cleanedText);
+  if (labelKind === "cleaning" || labelKind === "cosmetic") {
+    warnings.push(
+      labelKind === "cleaning" ? "Etichetta detergente/igienizzante rilevata \u2014 Open Beauty Facts / Open Products Facts, non alimentare." : "Etichetta cosmetica rilevata \u2014 ricerca su Open Beauty Facts."
+    );
+  }
+  if (!ingredients && /ingr[eé]dients|inhaltsstoffe|ingredienti/i.test(cleanedText)) {
+    warnings.push("Sezione ingredienti presente ma non estratta completamente \u2014 controlla il testo grezzo.");
+  }
+  return { labelKind, warnings, cleanedText, ingredients };
+}
+
 // server/lib/ocrHints.ts
 function extractBarcode(text) {
   const candidates = text.match(/\b(\d{8}|\d{12,14})\b/g) ?? [];
@@ -464,14 +571,14 @@ function extractBarcode(text) {
   }
   return void 0;
 }
-function cleanLine(line) {
+function cleanLine2(line) {
   return line.replace(/\s+/g, " ").trim();
 }
 function normalizeToken(value) {
   return value.toLowerCase().normalize("NFD").replace(new RegExp("\\p{M}", "gu"), "").trim();
 }
-var SKIP_LINE = /^(ingredienti|ingredients|allergeni|netto|peso|e\s*an|lotto|scadenza|barcode|codice|l['']immagine|prodotto in|made in|fabbricato in)/i;
-var CLAIM_OR_TAGLINE = /^(100%|ricco di|senza |no |privo|vegan|bio|organic|fair trade|bontà|salute|gusto|zero |free |gluten)/i;
+var SKIP_LINE = /^(ingredienti|ingredients|ingr[eé]dients|inhaltsstoffe|zutaten|allergeni|allerg[eè]nes|netto|peso|e\s*an|lotto|scadenza|barcode|codice|l['']immagine|prodotto in|made in|fabbricato in|composition)/i;
+var CLAIM_OR_TAGLINE = /^(100%|ricco di|senza |no |privo|vegan|bio|organic|fair trade|bontà|salute|gusto|zero |free |gluten|agents de surface|tenside)/i;
 var WEIGHT_LINE = /^\d+\s*[x×]\s*\d+/i;
 function isClaimOrTagline(line) {
   const norm = normalizeToken(line);
@@ -484,13 +591,28 @@ function isBrandLine(line, brand) {
   const brandNorm = normalizeToken(brand);
   return lineNorm === brandNorm || lineNorm.startsWith(`${brandNorm} `);
 }
+function looksLikeInciLine(line) {
+  if (/^>\s*\d+%/.test(line)) return true;
+  if (/^(agents de|anionische|non ioniques|amphot|eau,|water,|aqua)/i.test(line)) return true;
+  if (line.includes(",") && /sulfate|chloride|parfum|limonene|betaine|glucoside|benzoate|edta/i.test(line)) {
+    return true;
+  }
+  return false;
+}
+function isUsableNameLine(line) {
+  if (isSafetyOrInstructionLine(line)) return false;
+  if (looksLikeInciLine(line)) return false;
+  if (line.length < 2 || line.length > 80) return false;
+  if (/^(agents de|anionische|non ioniques|amphot)/i.test(line)) return false;
+  return true;
+}
 function inferProductName(lines, brand) {
   const nameParts = [];
-  for (const line of lines.slice(0, 14)) {
+  for (const line of lines.slice(0, 20)) {
     if (SKIP_LINE.test(line)) break;
+    if (!isUsableNameLine(line)) continue;
     if (/^\d+$/.test(line)) continue;
     if (WEIGHT_LINE.test(line)) continue;
-    if (line.length < 2 || line.length > 60) continue;
     if (isBrandLine(line, brand)) continue;
     if (isClaimOrTagline(line)) continue;
     const looksLikeNamePart = /^[A-ZÀ-Ü0-9][A-ZÀ-Ü0-9\s\-']*$/.test(line) && line.length <= 28 && !line.includes(",");
@@ -506,35 +628,39 @@ function inferProductName(lines, brand) {
   return void 0;
 }
 function inferHintsFromRawText(rawText) {
-  const lines = rawText.split("\n").map(cleanLine).filter((l) => l.length > 1);
+  const lines = rawText.split("\n").map(cleanLine2).filter((l) => l.length > 1);
   const barcode = extractBarcode(rawText);
   let brand;
   const brandLine = lines.find(
-    (l) => /^(marca|brand|fabbricante)\s*:?\s*/i.test(l)
+    (l) => /^(marca|brand|fabbricante|marque)\s*:?\s*/i.test(l)
   );
   if (brandLine) {
-    brand = brandLine.replace(/^(marca|brand|fabbricante)\s*:?\s*/i, "").trim();
+    brand = brandLine.replace(/^(marca|brand|fabbricante|marque)\s*:?\s*/i, "").trim();
   }
-  if (!brand && lines[0] && lines[0].length <= 25 && !SKIP_LINE.test(lines[0])) {
+  if (!brand && lines[0] && lines[0].length <= 25 && !SKIP_LINE.test(lines[0]) && !isSafetyOrInstructionLine(lines[0])) {
     brand = lines[0];
   }
   let productName = inferProductName(lines, brand);
-  const skipPattern = /^(ingredienti|ingredients|allergeni|netto|peso|e\s*an|lotto|scadenza|barcode|codice)/i;
+  const skipPattern = /^(ingredienti|ingredients|ingr[eé]dients|inhaltsstoffe|allergeni|allerg[eè]nes|netto|peso|e\s*an|lotto|scadenza|barcode|codice)/i;
   if (!productName) {
-    for (const line of lines.slice(0, 8)) {
-      if (skipPattern.test(line)) continue;
+    for (const line of lines.slice(0, 12)) {
+      if (skipPattern.test(line)) break;
+      if (!isUsableNameLine(line)) continue;
       if (/^\d+$/.test(line)) continue;
       if (isBrandLine(line, brand)) continue;
-      if (line.length < 2 || line.length > 80) continue;
       productName = line;
       break;
     }
   }
-  const idx = lines.findIndex((l) => /^ingredienti/i.test(l));
+  const idx = lines.findIndex((l) => /^(?:ingredienti|ingr[eé]dients|inhaltsstoffe)/i.test(l));
   if (!productName && idx > 0) {
     const candidate = lines[idx - 1];
-    if (candidate && !isBrandLine(candidate, brand)) productName = candidate;
+    if (candidate && !isBrandLine(candidate, brand) && isUsableNameLine(candidate)) {
+      productName = candidate;
+    }
   }
+  if (productName && isSafetyOrInstructionLine(productName)) productName = void 0;
+  if (brand && isSafetyOrInstructionLine(brand)) brand = void 0;
   return {
     barcode: sanitizeBarcode(barcode),
     productName,
@@ -624,7 +750,11 @@ async function buildProductEvidence(input) {
   if (!barcode && nameQuery) {
     searchQuery = brandQuery ? `${brandQuery} ${nameQuery}` : nameQuery;
     const { result: nameHit, ms } = await timed(
-      () => searchProductByName(nameQuery, { brand: brandQuery, ocrText: ocrRawText })
+      () => searchProductByName(nameQuery, {
+        brand: brandQuery,
+        ocrText: ocrRawText,
+        labelKind: input.ocr?.labelKind
+      })
     );
     if (nameHit) {
       if (ocrRawText && isOcrDatabaseMismatch(ocrRawText, nameHit.product, brandQuery)) {
@@ -1047,35 +1177,28 @@ async function analyzeWithAi(evidence) {
 }
 
 // server/lib/ocrVision.ts
-var VISION_PROMPT = "Trascrivi fedelmente tutto il testo visibile in questa etichetta alimentare. Includi: nome prodotto, marca, ingredienti, allergeni, codice a barre/EAN, peso netto, certificazioni (bio, vegan, DOP, IGP, ecc.) e origine (prodotto in / made in). Mantieni l'ordine e le righe originali. Restituisci SOLO il testo trascritto, senza commenti n\xE9 markdown.";
-function extractField(text, patterns) {
-  for (const re of patterns) {
-    const m = text.match(re);
-    if (m?.[1]?.trim()) return m[1].trim();
-  }
-  return void 0;
-}
+var VISION_PROMPT = "Trascrivi fedelmente tutto il testo visibile su questa etichetta (alimentare, cosmetica o detergente). Includi: nome prodotto, marca, ingredienti/INCI, allergeni, avvertenze di sicurezza, codice EAN/barcode, peso netto, certificazioni e origine se presenti. NON inventare ingredienti o varianti chimiche: trascrivi solo ci\xF2 che \xE8 leggibile. Mantieni l'ordine e le righe originali. Restituisci SOLO il testo trascritto, senza commenti n\xE9 markdown.";
 function enrichFromRawText(rawText) {
-  const hints = inferHintsFromRawText(rawText);
-  const lower = rawText.toLowerCase();
-  const ingredients = extractField(rawText, [
-    /ingredienti\s*:?\s*([\s\S]{10,800}?)(?:\n\n|\n(?:allergeni|contiene|conservare|netto)|$)/i,
-    /ingredients\s*:?\s*([\s\S]{10,800}?)(?:\n\n|\n(?:allergens|contains)|$)/i
-  ]);
+  const analysis = analyzeOcrText(rawText);
+  const text = analysis.cleanedText;
+  const hints = inferHintsFromRawText(text);
+  const lower = text.toLowerCase();
   const labelClaims = [];
   for (const kw of ["bio", "organic", "vegan", "gluten free", "senza glutine", "fair trade", "dop", "igp"]) {
     if (lower.includes(kw)) labelClaims.push(kw);
   }
   const originClaims = [];
-  const originMatch = rawText.match(
+  const originMatch = text.match(
     /(?:prodotto in|made in|origine|fabbricato in)\s*:?\s*([^\n,;]+)/gi
   );
   if (originMatch) originClaims.push(...originMatch.map((s) => s.trim()));
   return {
-    rawText,
+    rawText: text,
     productName: hints.productName,
     brand: hints.brand,
-    ingredients,
+    ingredients: analysis.ingredients,
+    labelKind: analysis.labelKind,
+    warnings: analysis.warnings.length ? analysis.warnings : void 0,
     labelClaims,
     originClaims
   };
@@ -1142,6 +1265,8 @@ async function extractTextFromImage(imageBuffer, mimeType = "image/jpeg") {
     productName: enriched.productName,
     brand: enriched.brand,
     ingredients: enriched.ingredients,
+    labelKind: enriched.labelKind,
+    warnings: enriched.warnings,
     originClaims: enriched.originClaims ?? [],
     labelClaims: enriched.labelClaims ?? [],
     provider: "infomaniak",

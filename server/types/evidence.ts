@@ -16,6 +16,10 @@ export interface OcrExtraction {
   productName?: string;
   brand?: string;
   ingredients?: string;
+  /** food | cosmetic | cleaning | unknown — inferito dal testo OCR */
+  labelKind?: "food" | "cosmetic" | "cleaning" | "unknown";
+  /** Avvisi qualità OCR (allucinazioni, tipo etichetta, ecc.) */
+  warnings?: string[];
   originClaims: string[];
   labelClaims: string[];
   provider: string;

@@ -5,33 +5,24 @@ import {
   type ChatContentPart,
 } from "./infomaniakClient";
 import { extractBarcode, inferHintsFromRawText } from "./ocrHints";
+import { analyzeOcrText } from "./ocrTextAnalysis";
 import type { OcrExtraction } from "../types/evidence";
 
 export { checkInfomaniakVisionAvailable } from "./infomaniakClient";
 
 const VISION_PROMPT =
-  "Trascrivi fedelmente tutto il testo visibile in questa etichetta alimentare. " +
-  "Includi: nome prodotto, marca, ingredienti, allergeni, codice a barre/EAN, peso netto, " +
-  "certificazioni (bio, vegan, DOP, IGP, ecc.) e origine (prodotto in / made in). " +
+  "Trascrivi fedelmente tutto il testo visibile su questa etichetta (alimentare, cosmetica o detergente). " +
+  "Includi: nome prodotto, marca, ingredienti/INCI, allergeni, avvertenze di sicurezza, codice EAN/barcode, peso netto, " +
+  "certificazioni e origine se presenti. " +
+  "NON inventare ingredienti o varianti chimiche: trascrivi solo ciò che è leggibile. " +
   "Mantieni l'ordine e le righe originali. " +
   "Restituisci SOLO il testo trascritto, senza commenti né markdown.";
 
-function extractField(text: string, patterns: RegExp[]): string | undefined {
-  for (const re of patterns) {
-    const m = text.match(re);
-    if (m?.[1]?.trim()) return m[1].trim();
-  }
-  return undefined;
-}
-
 function enrichFromRawText(rawText: string): Partial<OcrExtraction> {
-  const hints = inferHintsFromRawText(rawText);
-  const lower = rawText.toLowerCase();
-
-  const ingredients = extractField(rawText, [
-    /ingredienti\s*:?\s*([\s\S]{10,800}?)(?:\n\n|\n(?:allergeni|contiene|conservare|netto)|$)/i,
-    /ingredients\s*:?\s*([\s\S]{10,800}?)(?:\n\n|\n(?:allergens|contains)|$)/i,
-  ]);
+  const analysis = analyzeOcrText(rawText);
+  const text = analysis.cleanedText;
+  const hints = inferHintsFromRawText(text);
+  const lower = text.toLowerCase();
 
   const labelClaims: string[] = [];
   for (const kw of ["bio", "organic", "vegan", "gluten free", "senza glutine", "fair trade", "dop", "igp"]) {
@@ -39,16 +30,18 @@ function enrichFromRawText(rawText: string): Partial<OcrExtraction> {
   }
 
   const originClaims: string[] = [];
-  const originMatch = rawText.match(
+  const originMatch = text.match(
     /(?:prodotto in|made in|origine|fabbricato in)\s*:?\s*([^\n,;]+)/gi,
   );
   if (originMatch) originClaims.push(...originMatch.map((s) => s.trim()));
 
   return {
-    rawText,
+    rawText: text,
     productName: hints.productName,
     brand: hints.brand,
-    ingredients,
+    ingredients: analysis.ingredients,
+    labelKind: analysis.labelKind,
+    warnings: analysis.warnings.length ? analysis.warnings : undefined,
     labelClaims,
     originClaims,
   };
@@ -138,6 +131,8 @@ export async function extractTextFromImage(
     productName: enriched.productName,
     brand: enriched.brand,
     ingredients: enriched.ingredients,
+    labelKind: enriched.labelKind,
+    warnings: enriched.warnings,
     originClaims: enriched.originClaims ?? [],
     labelClaims: enriched.labelClaims ?? [],
     provider: "infomaniak",

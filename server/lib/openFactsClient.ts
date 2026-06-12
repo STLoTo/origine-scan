@@ -130,6 +130,25 @@ interface NameSearchOptions {
   brand?: string;
   /** Testo OCR completo per scegliere il match più coerente */
   ocrText?: string;
+  labelKind?: "food" | "cosmetic" | "cleaning" | "unknown";
+}
+
+const ALL_DATABASES = [
+  { base: "https://world.openfoodfacts.org", label: "open_food_facts" },
+  { base: "https://world.openbeautyfacts.org", label: "open_beauty_facts" },
+  { base: "https://world.openproductsfacts.org", label: "open_products_facts" },
+] as const;
+
+function databasesForLabelKind(
+  labelKind?: NameSearchOptions["labelKind"],
+): typeof ALL_DATABASES[number][] {
+  if (labelKind === "cleaning") {
+    return [ALL_DATABASES[2], ALL_DATABASES[1], ALL_DATABASES[0]];
+  }
+  if (labelKind === "cosmetic") {
+    return [ALL_DATABASES[1], ALL_DATABASES[2], ALL_DATABASES[0]];
+  }
+  return [...ALL_DATABASES];
 }
 
 /** Ricerca per nome/marca su Open Facts (fallback se manca barcode) */
@@ -147,11 +166,7 @@ export async function searchProductByName(
   const query = [brand, name].filter(Boolean).join(" ").trim();
   if (query.length < 2) return null;
 
-  const bases = [
-    { base: "https://world.openfoodfacts.org", label: "open_food_facts" },
-    { base: "https://world.openbeautyfacts.org", label: "open_beauty_facts" },
-    { base: "https://world.openproductsfacts.org", label: "open_products_facts" },
-  ] as const;
+  const bases = databasesForLabelKind(options.labelKind);
 
   let best: { product: FlatOpenProduct; barcode: string; score: number } | null = null;
 
