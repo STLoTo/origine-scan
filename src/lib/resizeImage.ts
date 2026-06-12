@@ -1,5 +1,5 @@
 /** Riduce foto etichetta prima dell'upload (evita errori API su immagini enormi) */
-export async function resizeImageForOcr(file: File, maxSide = 1600): Promise<File> {
+export async function resizeImageForOcr(file: File, maxSide = 1200): Promise<File> {
   if (!file.type.startsWith("image/")) return file;
 
   const bitmap = await createImageBitmap(file);
@@ -7,7 +7,7 @@ export async function resizeImageForOcr(file: File, maxSide = 1600): Promise<Fil
   const w = Math.round(bitmap.width * scale);
   const h = Math.round(bitmap.height * scale);
 
-  if (scale >= 1 && file.type === "image/jpeg" && file.size < 2 * 1024 * 1024) {
+  if (scale >= 1 && file.type === "image/jpeg" && file.size < 800 * 1024) {
     bitmap.close();
     return file;
   }
@@ -25,7 +25,7 @@ export async function resizeImageForOcr(file: File, maxSide = 1600): Promise<Fil
   bitmap.close();
 
   const blob = await new Promise<Blob | null>((resolve) =>
-    canvas.toBlob(resolve, "image/jpeg", 0.88),
+    canvas.toBlob(resolve, "image/jpeg", 0.78),
   );
 
   if (!blob) return file;

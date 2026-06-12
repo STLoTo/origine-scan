@@ -82,6 +82,34 @@ async function main() {
   // Caso 4: prodotto bio (certificazioni)
   await runCase("Prodotto bio (cert)", { barcode: "3760049790214" });
 
+  // Caso 5: Valsoia Tofu — OCR corretto, DB deve essere rifiutato se match crema spalmabile
+  const valsoiaOcr: OcrExtraction = {
+    rawText: `VALSOIA
+VALSOIA
+BONTÀ E SALUTE
+
+TOFU
+NATURALE
+
+100% VEGETALE
+
+L'immagine ha il solo scopo di presentare il prodotto.
+
+Ricco di proteine vegetali
+Senza sale aggiunto
+
+VALSOIA
+
+2 x 125g`,
+    productName: "TOFU NATURALE",
+    brand: "VALSOIA",
+    originClaims: [],
+    labelClaims: [],
+    provider: "test",
+    model: "simulated",
+  };
+  await runCase("Valsoia Tofu (anti-mismatch)", { ocr: valsoiaOcr });
+
   console.log("\n" + "=".repeat(60));
 }
 

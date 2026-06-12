@@ -9,7 +9,9 @@ import {
   searchProductByName,
   type FlatOpenProduct,
 } from "../lib/openFactsClient";
+import { sanitizeBarcode } from "../lib/barcode";
 import { inferHintsFromRawText } from "../lib/ocrHints";
+import { isOcrDatabaseMismatch } from "../lib/productMatch";
 import type {
   OcrExtraction,
   ProductEvidence,
@@ -106,11 +108,11 @@ export async function buildProductEvidence(
   const sources: SourceEvidence[] = [];
   let offProduct: FlatOpenProduct | null = null;
 
-  const ocrHints = input.ocr?.rawText ? inferHintsFromRawText(input.ocr.rawText) : {};
-  let barcode =
-    input.barcode?.trim() ||
-    input.ocr?.barcode ||
-    ocrHints.barcode;
+  const ocrRawText = input.ocr?.rawText;
+  const ocrHints = ocrRawText ? inferHintsFromRawText(ocrRawText) : {};
+  let barcode = sanitizeBarcode(
+    input.barcode?.trim() || input.ocr?.barcode || ocrHints.barcode,
+  );
   let searchMethod: ProductEvidence["searchMethod"] = "none";
   let searchQuery: string | undefined;
 
@@ -126,31 +128,69 @@ export async function buildProductEvidence(
     input.productVision?.brand?.trim() ||
     ocrHints.brand?.trim();
 
-  // Ricerca per nome su Open Facts se manca barcode
+  function rejectDatabaseMatch(
+    rejected: FlatOpenProduct,
+    rejectedBarcode: string | undefined,
+    via: "barcode" | "name",
+    query?: string,
+  ) {
+    sources.push(
+      source("open_facts_rejected", "Open Facts (identità non concorde)", "empty", {
+        via,
+        query,
+        attemptedProduct: rejected.product_name,
+        attemptedBarcode: rejectedBarcode,
+        note:
+          "Il prodotto trovato in banca dati non corrisponde al testo OCR dell'etichetta. " +
+          "Vengono mostrati solo i dati letti dall'etichetta.",
+      }),
+    );
+    offProduct = null;
+    barcode = undefined;
+    searchMethod = "ocr_only";
+  }
+
+  // Ricerca per nome su Open Facts se manca barcode valido
   if (!barcode && nameQuery) {
     searchQuery = brandQuery ? `${brandQuery} ${nameQuery}` : nameQuery;
     const { result: nameHit, ms } = await timed(() =>
-      searchProductByName(nameQuery, brandQuery),
+      searchProductByName(nameQuery, { brand: brandQuery, ocrText: ocrRawText }),
     );
 
     if (nameHit) {
-      barcode = nameHit.barcode;
-      offProduct = nameHit.product;
-      searchMethod = "name";
-      sources.push(
-        source(
-          "open_facts_search",
-          "Open Facts (ricerca nome)",
-          "ok",
-          {
-            query: searchQuery,
-            matched: nameHit.product.product_name,
-            barcode: nameHit.barcode,
-            database: nameHit.product.source_database,
-          },
-          ms,
-        ),
-      );
+      if (
+        ocrRawText &&
+        isOcrDatabaseMismatch(ocrRawText, nameHit.product, brandQuery)
+      ) {
+        rejectDatabaseMatch(nameHit.product, nameHit.barcode, "name", searchQuery);
+        sources.push(
+          source(
+            "open_facts_search",
+            "Open Facts (ricerca nome)",
+            "empty",
+            { query: searchQuery, rejected: nameHit.product.product_name },
+            ms,
+          ),
+        );
+      } else {
+        barcode = nameHit.barcode;
+        offProduct = nameHit.product;
+        searchMethod = "name";
+        sources.push(
+          source(
+            "open_facts_search",
+            "Open Facts (ricerca nome)",
+            "ok",
+            {
+              query: searchQuery,
+              matched: nameHit.product.product_name,
+              barcode: nameHit.barcode,
+              database: nameHit.product.source_database,
+            },
+            ms,
+          ),
+        );
+      }
     } else {
       sources.push(
         source(
@@ -171,15 +211,34 @@ export async function buildProductEvidence(
       offProduct = result;
 
       if (result?.product_name || result?.brands) {
-        sources.push(
-          source(
-            result.source_database,
-            result.source_database.replace(/_/g, " "),
-            "ok",
-            result as unknown as Record<string, unknown>,
-            ms,
-          ),
-        );
+        if (
+          ocrRawText &&
+          isOcrDatabaseMismatch(ocrRawText, result, brandQuery)
+        ) {
+          rejectDatabaseMatch(result, barcode, "barcode", searchQuery);
+          sources.push(
+            source(
+              result.source_database,
+              result.source_database.replace(/_/g, " "),
+              "empty",
+              {
+                rejected: result.product_name,
+                barcode,
+              },
+              ms,
+            ),
+          );
+        } else {
+          sources.push(
+            source(
+              result.source_database,
+              result.source_database.replace(/_/g, " "),
+              "ok",
+              result as unknown as Record<string, unknown>,
+              ms,
+            ),
+          );
+        }
       } else {
         sources.push(
           source("open_facts", "Open Facts (universale)", "empty", {}, ms),
@@ -197,31 +256,49 @@ export async function buildProductEvidence(
       );
     }
 
-    const gs1 = await appendGs1(sources, barcode);
+    if (!offProduct) {
+      sources.push(
+        source("gs1", "GS1 / Barcode lookup", "skipped", {
+          note: "Match banca dati non coerente con OCR",
+        }),
+      );
+      sources.push(
+        source("certifications_db", "Certificazioni", "skipped", {
+          note: "Richiede prodotto trovato su Open Facts",
+        }),
+      );
+      sources.push(
+        source("customs_un_comtrade", "Dogana / Comtrade", "skipped", {
+          note: "Richiede prodotto trovato su Open Facts",
+        }),
+      );
+    } else {
+      await appendGs1(sources, barcode);
 
-    const certs = extractCertifications(offProduct);
-    const certList = certs.certifications as { name: string; issuer: string; source: string }[];
-    sources.push(
-      source(
-        "certifications_db",
-        "Certificazioni",
-        certList.length ? "ok" : "empty",
-        certs,
-      ),
-    );
+      const certs = extractCertifications(offProduct);
+      const certList = certs.certifications as { name: string; issuer: string; source: string }[];
+      sources.push(
+        source(
+          "certifications_db",
+          "Certificazioni",
+          certList.length ? "ok" : "empty",
+          certs,
+        ),
+      );
 
-    const { result: customs, ms: customsMs } = await timed(() =>
-      lookupCustoms(offProduct, barcode),
-    );
-    sources.push(
-      source(
-        "customs_un_comtrade",
-        "Dogana / Comtrade",
-        customs.hs_code || customs.last_import_country ? "ok" : "empty",
-        customs,
-        customsMs,
-      ),
-    );
+      const { result: customs, ms: customsMs } = await timed(() =>
+        lookupCustoms(offProduct, barcode),
+      );
+      sources.push(
+        source(
+          "customs_un_comtrade",
+          "Dogana / Comtrade",
+          customs.hs_code || customs.last_import_country ? "ok" : "empty",
+          customs,
+          customsMs,
+        ),
+      );
+    }
   } else if ((input.ocr || nameQuery) && !barcode) {
     searchMethod = "ocr_only";
     const nameSearchDone = sources.some((s) => s.source === "open_facts_search");

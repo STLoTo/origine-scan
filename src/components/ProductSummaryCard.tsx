@@ -42,6 +42,7 @@ export function ProductSummaryCard({ evidence }: Props) {
   const gs1Company = gs1?.company_name != null ? String(gs1.company_name) : undefined;
 
   const okSources = evidence.sources.filter((s) => s.status === "ok");
+  const rejectedDbMatch = evidence.sources.find((s) => s.source === "open_facts_rejected");
 
   const hasGeo =
     countries || origins || manufacturing || purchasePlaces || customs?.hsCode;
@@ -59,6 +60,16 @@ export function ProductSummaryCard({ evidence }: Props) {
 
   return (
     <Card title="Scheda prodotto" className="border-emerald-500/30 bg-gradient-to-br from-slate-900/90 to-emerald-950/20">
+      {rejectedDbMatch && (
+        <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+          {String(rejectedDbMatch.data.note ?? "Match banca dati non coerente con l'etichetta.")}
+          {rejectedDbMatch.data.attemptedProduct != null && (
+            <span className="mt-1 block text-xs text-amber-300/90">
+              Trovato in DB: {String(rejectedDbMatch.data.attemptedProduct)}
+            </span>
+          )}
+        </div>
+      )}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
         <ProductImage
           url={identity.imageUrl}

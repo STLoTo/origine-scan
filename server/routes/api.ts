@@ -12,17 +12,34 @@ import {
   normalizeProductImageUrl,
 } from "../lib/imageProxy";
 import { serverConfig } from "../config";
-import type { AnalyzeResponse } from "../types/evidence";
+import type { AnalyzeResponse, OcrExtraction, ProductVision } from "../types/evidence";
+
+/** Limite Vercel: body request max ~4.5MB — teniamo margine per multipart */
+const VERCEL_MAX_FILE_BYTES = 900 * 1024;
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 12 * 1024 * 1024 },
+  limits: { fileSize: VERCEL_MAX_FILE_BYTES },
 });
 
 const analyzeUpload = upload.fields([
   { name: "image", maxCount: 1 },
   { name: "productImages", maxCount: maxProductImages },
 ]);
+
+const productVisionUpload = upload.array("productImages", maxProductImages);
+
+async function runAnalysis(input: {
+  barcode?: string;
+  ocr?: OcrExtraction;
+  productVision?: ProductVision;
+  productName?: string;
+  brand?: string;
+}): Promise<AnalyzeResponse> {
+  const evidence = await buildProductEvidence(input);
+  const analysis = await analyzeWithAi(evidence);
+  return { evidence, analysis };
+}
 
 export const apiRouter = express.Router();
 
@@ -64,6 +81,56 @@ apiRouter.get("/databases/status", async (_req, res) => {
   }
 });
 
+function multerErrorMessage(err: unknown): string {
+  if (err && typeof err === "object" && "code" in err && err.code === "LIMIT_FILE_SIZE") {
+    return "Immagine troppo grande (max ~900KB). Riduci la foto e riprova.";
+  }
+  return err instanceof Error ? err.message : "Errore upload";
+}
+
+/** Vision da foto prodotto (endpoint leggero, una richiesta per batch) */
+apiRouter.post("/product/vision", productVisionUpload, async (req, res) => {
+  try {
+    const files = req.files as Express.Multer.File[] | undefined;
+    if (!files?.length) {
+      res.status(400).json({ error: "Almeno una foto prodotto richiesta (productImages)" });
+      return;
+    }
+
+    const productVision = await describeProductFromImages(
+      files.map((f) => ({ buffer: f.buffer, mimeType: f.mimetype })),
+    );
+    res.json({ success: true, productVision });
+  } catch (err) {
+    res.status(503).json({ success: false, error: multerErrorMessage(err) });
+  }
+});
+
+/** Analisi completa via JSON (consigliato su Vercel — evita multipart pesante su /analyze) */
+apiRouter.post("/analyze/json", async (req, res) => {
+  try {
+    const body = req.body as {
+      ocr?: OcrExtraction;
+      productVision?: ProductVision;
+      barcode?: string;
+      productName?: string;
+      brand?: string;
+    };
+
+    const response = await runAnalysis({
+      ocr: body.ocr,
+      productVision: body.productVision,
+      barcode: body.barcode?.trim() || body.ocr?.barcode,
+      productName: body.productName?.trim() || body.ocr?.productName || body.productVision?.productName,
+      brand: body.brand?.trim() || body.ocr?.brand || body.productVision?.brand,
+    });
+    res.json(response);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Errore analisi";
+    res.status(500).json({ error: message });
+  }
+});
+
 /** OCR da immagine etichetta */
 apiRouter.post("/ocr/label", upload.single("image"), async (req, res) => {
   try {
@@ -75,8 +142,8 @@ apiRouter.post("/ocr/label", upload.single("image"), async (req, res) => {
     const ocr = await extractTextFromImage(req.file.buffer, req.file.mimetype);
     res.json({ success: true, ocr });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Errore OCR";
-    res.status(503).json({
+    const message = multerErrorMessage(err);
+    res.status(message.includes("troppo grande") ? 413 : 503).json({
       success: false,
       error: message,
       hint: "Verifica token/product_id e INFOMANIAK_VISION_MODEL (es. mistralai/Ministral-3-14B-Instruct-2512)",
@@ -144,7 +211,7 @@ apiRouter.post("/analyze", analyzeUpload, async (req, res) => {
       );
     }
 
-    const evidence = await buildProductEvidence({
+    const response = await runAnalysis({
       barcode,
       ocr,
       productVision,
@@ -155,12 +222,9 @@ apiRouter.post("/analyze", analyzeUpload, async (req, res) => {
       brand:
         req.body.brand ? String(req.body.brand) : ocr?.brand ?? productVision?.brand,
     });
-    const analysis = await analyzeWithAi(evidence);
-
-    const response: AnalyzeResponse = { evidence, analysis };
     res.json(response);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Errore analisi";
+    const message = multerErrorMessage(err);
     res.status(500).json({ error: message });
   }
 });
@@ -174,9 +238,8 @@ apiRouter.post("/analyze/barcode", async (req, res) => {
       return;
     }
 
-    const evidence = await buildProductEvidence({ barcode });
-    const analysis = await analyzeWithAi(evidence);
-    res.json({ evidence, analysis } satisfies AnalyzeResponse);
+    const response = await runAnalysis({ barcode });
+    res.json(response satisfies AnalyzeResponse);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Errore analisi";
     res.status(500).json({ error: message });

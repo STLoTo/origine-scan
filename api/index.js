@@ -61,6 +61,56 @@ var serverConfig = {
   llmTimeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? 9e4)
 };
 
+// server/lib/imageProxy.ts
+var ALLOWED_IMAGE_HOSTS = /* @__PURE__ */ new Set([
+  "images.openfoodfacts.org",
+  "images.openbeautyfacts.org",
+  "images.openproductsfacts.org",
+  "static.openfoodfacts.org",
+  "static.openbeautyfacts.org",
+  "static.openproductsfacts.org",
+  "world.openfoodfacts.org",
+  "world.openbeautyfacts.org",
+  "world.openproductsfacts.org"
+]);
+function normalizeProductImageUrl(url) {
+  if (!url?.trim()) return void 0;
+  try {
+    const parsed = new URL(url.trim());
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return void 0;
+    return parsed.href;
+  } catch {
+    return void 0;
+  }
+}
+function isAllowedProductImageUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return ALLOWED_IMAGE_HOSTS.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+async function fetchProductImage(url) {
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": serverConfig.userAgent,
+      Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+    },
+    signal: AbortSignal.timeout(serverConfig.requestTimeoutMs),
+    redirect: "follow"
+  });
+  if (!res.ok) {
+    return { ok: false, status: res.status };
+  }
+  const contentType = res.headers.get("content-type") ?? "image/jpeg";
+  if (!contentType.startsWith("image/")) {
+    return { ok: false, status: 415 };
+  }
+  const buffer = Buffer.from(await res.arrayBuffer());
+  return { ok: true, buffer, contentType };
+}
+
 // server/lib/http.ts
 async function fetchJson(url, init) {
   const timeoutMs = init?.timeoutMs ?? serverConfig.requestTimeoutMs;
@@ -235,6 +285,57 @@ function extractOriginFromTitle(title) {
   return match ? match[1].trim() : void 0;
 }
 
+// server/lib/productMatch.ts
+var STOP_WORDS = /* @__PURE__ */ new Set([
+  "valsoia",
+  "prodotto",
+  "immagine",
+  "scopo",
+  "presentare",
+  "vegetale",
+  "naturale",
+  "added",
+  "senza",
+  "sale",
+  "ricco",
+  "proteine",
+  "bont\xE0",
+  "salute",
+  "marca",
+  "brand"
+]);
+var HARD_CONFLICTS = [
+  { ocr: /\btofu\b/i, db: /\b(nocciol|hazelnut|cacao|spalmab|spread|crema)\b/i },
+  { ocr: /\byogurt\b/i, db: /\b(pasta|ragù|sugo)\b/i },
+  { ocr: /\blatte\b/i, db: /\b(tofu|seitan)\b/i }
+];
+function normalizeText(text) {
+  return text.toLowerCase().normalize("NFD").replace(new RegExp("\\p{M}", "gu"), "").replace(/[^\p{L}\p{N}\s]/gu, " ");
+}
+function tokenize(text, excludeBrand) {
+  const brandNorm = excludeBrand ? normalizeText(excludeBrand) : "";
+  return normalizeText(text).split(/\s+/).filter((w) => w.length >= 3).filter((w) => !STOP_WORDS.has(w)).filter((w) => !brandNorm || w !== brandNorm);
+}
+function scoreProductAgainstOcr(ocrText, product, brand) {
+  const ocrTokens = tokenize(ocrText, brand);
+  if (!ocrTokens.length) return 0.5;
+  const dbText = [product.product_name, product.categories, product.ingredients_text].filter(Boolean).join(" ");
+  const dbBlob = normalizeText(dbText);
+  let hits = 0;
+  for (const token of ocrTokens) {
+    if (dbBlob.includes(token)) hits += 1;
+  }
+  return hits / ocrTokens.length;
+}
+function hasHardProductConflict(ocrText, product) {
+  const dbText = [product.product_name, product.categories, product.ingredients_text].filter(Boolean).join(" ");
+  return HARD_CONFLICTS.some(({ ocr, db }) => ocr.test(ocrText) && db.test(dbText));
+}
+function isOcrDatabaseMismatch(ocrText, product, brand, minScore = 0.2) {
+  if (hasHardProductConflict(ocrText, product)) return true;
+  return scoreProductAgainstOcr(ocrText, product, brand) < minScore;
+}
+
 // server/lib/openFactsClient.ts
 var OFF_FIELDS = [
   "product_name",
@@ -260,6 +361,8 @@ function flattenProduct(product, sourceDatabase, productType) {
     countries: String(product.countries ?? ""),
     origins: String(product.origins ?? ""),
     manufacturing_places: String(product.manufacturing_places ?? ""),
+    purchase_places: String(product.purchase_places ?? ""),
+    emb_codes: String(product.emb_codes ?? ""),
     ingredients_text: String(product.ingredients_text ?? ""),
     labels: String(product.labels ?? ""),
     labels_tags: Array.isArray(product.labels_tags) ? product.labels_tags : void 0,
@@ -297,7 +400,9 @@ async function fetchUniversalProduct(barcode) {
 async function fetchOpenFoodFacts(barcode) {
   return fetchFromBase("https://world.openfoodfacts.org", "open_food_facts", barcode);
 }
-async function searchProductByName(name, brand) {
+async function searchProductByName(name, brandOrOptions, legacyBrand) {
+  const options = typeof brandOrOptions === "string" ? { brand: brandOrOptions ?? legacyBrand } : brandOrOptions ?? { brand: legacyBrand };
+  const brand = options.brand;
   const query = [brand, name].filter(Boolean).join(" ").trim();
   if (query.length < 2) return null;
   const bases = [
@@ -305,28 +410,100 @@ async function searchProductByName(name, brand) {
     { base: "https://world.openbeautyfacts.org", label: "open_beauty_facts" },
     { base: "https://world.openproductsfacts.org", label: "open_products_facts" }
   ];
+  let best = null;
   for (const source2 of bases) {
-    const url = `${source2.base}/cgi/search.pl?search_terms=${encodeURIComponent(query)}&search_simple=1&action=process&json=1&page_size=1`;
+    const url = `${source2.base}/cgi/search.pl?search_terms=${encodeURIComponent(query)}&search_simple=1&action=process&json=1&page_size=5`;
     const result = await fetchJson(url);
-    const hit = result.data?.products?.[0];
-    if (!hit?.code) continue;
-    const full = await fetchFromBase(source2.base, source2.label, hit.code);
-    if (full?.product_name || full?.brands) {
-      return { product: full, barcode: hit.code };
+    const hits = result.data?.products ?? [];
+    for (const hit of hits) {
+      if (!hit?.code) continue;
+      const full = await fetchFromBase(source2.base, source2.label, hit.code);
+      if (!full?.product_name && !full?.brands) continue;
+      const score = options.ocrText ? scoreProductAgainstOcr(options.ocrText, full, brand) : 0.5;
+      if (!best || score > best.score) {
+        best = { product: full, barcode: hit.code, score };
+      }
     }
+    if (best && best.score >= 0.2) break;
   }
-  return null;
+  if (!best) return null;
+  if (options.ocrText && best.score < 0.15) return null;
+  return { product: best.product, barcode: best.barcode };
+}
+
+// server/lib/barcode.ts
+var VALID_LENGTHS = /* @__PURE__ */ new Set([8, 12, 13, 14]);
+function checksumDigit(payload) {
+  let sum = 0;
+  for (let i = 0; i < payload.length; i++) {
+    const digit = parseInt(payload[payload.length - 1 - i], 10);
+    sum += digit * (i % 2 === 0 ? 3 : 1);
+  }
+  return (10 - sum % 10) % 10;
+}
+function isValidEan(code) {
+  const digits = code.replace(/\D/g, "");
+  if (!VALID_LENGTHS.has(digits.length)) return false;
+  if (!/^\d+$/.test(digits)) return false;
+  const expected = checksumDigit(digits.slice(0, -1));
+  return expected === parseInt(digits.at(-1), 10);
+}
+function sanitizeBarcode(code) {
+  const trimmed = code?.trim();
+  if (!trimmed) return void 0;
+  const digits = trimmed.replace(/\D/g, "");
+  return isValidEan(digits) ? digits : void 0;
 }
 
 // server/lib/ocrHints.ts
 function extractBarcode(text) {
-  const ean = text.match(/\b(\d{13})\b/);
-  if (ean) return ean[1];
-  const other = text.match(/\b(\d{8}|\d{12,14})\b/g);
-  return other?.[other.length - 1];
+  const candidates = text.match(/\b(\d{8}|\d{12,14})\b/g) ?? [];
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const code = candidates[i];
+    if (isValidEan(code)) return code;
+  }
+  return void 0;
 }
 function cleanLine(line) {
   return line.replace(/\s+/g, " ").trim();
+}
+function normalizeToken(value) {
+  return value.toLowerCase().normalize("NFD").replace(new RegExp("\\p{M}", "gu"), "").trim();
+}
+var SKIP_LINE = /^(ingredienti|ingredients|allergeni|netto|peso|e\s*an|lotto|scadenza|barcode|codice|l['']immagine|prodotto in|made in|fabbricato in)/i;
+var CLAIM_OR_TAGLINE = /^(100%|ricco di|senza |no |privo|vegan|bio|organic|fair trade|bontà|salute|gusto|zero |free |gluten)/i;
+var WEIGHT_LINE = /^\d+\s*[x×]\s*\d+/i;
+function isClaimOrTagline(line) {
+  const norm = normalizeToken(line);
+  if (CLAIM_OR_TAGLINE.test(line) || CLAIM_OR_TAGLINE.test(norm)) return true;
+  return /^(bonta e salute|100 vegetale)$/.test(norm);
+}
+function isBrandLine(line, brand) {
+  if (!brand) return false;
+  const lineNorm = normalizeToken(line);
+  const brandNorm = normalizeToken(brand);
+  return lineNorm === brandNorm || lineNorm.startsWith(`${brandNorm} `);
+}
+function inferProductName(lines, brand) {
+  const nameParts = [];
+  for (const line of lines.slice(0, 14)) {
+    if (SKIP_LINE.test(line)) break;
+    if (/^\d+$/.test(line)) continue;
+    if (WEIGHT_LINE.test(line)) continue;
+    if (line.length < 2 || line.length > 60) continue;
+    if (isBrandLine(line, brand)) continue;
+    if (isClaimOrTagline(line)) continue;
+    const looksLikeNamePart = /^[A-ZÀ-Ü0-9][A-ZÀ-Ü0-9\s\-']*$/.test(line) && line.length <= 28 && !line.includes(",");
+    if (looksLikeNamePart) {
+      nameParts.push(line);
+      if (nameParts.length >= 3) break;
+      continue;
+    }
+    if (!nameParts.length) return line;
+    break;
+  }
+  if (nameParts.length) return nameParts.join(" ");
+  return void 0;
 }
 function inferHintsFromRawText(rawText) {
   const lines = rawText.split("\n").map(cleanLine).filter((l) => l.length > 1);
@@ -338,24 +515,31 @@ function inferHintsFromRawText(rawText) {
   if (brandLine) {
     brand = brandLine.replace(/^(marca|brand|fabbricante)\s*:?\s*/i, "").trim();
   }
-  const skipPattern = /^(ingredienti|ingredients|allergeni|netto|peso|e\s*an|lotto|scadenza|barcode|codice)/i;
-  let productName;
-  for (const line of lines.slice(0, 8)) {
-    if (skipPattern.test(line)) continue;
-    if (/^\d+$/.test(line)) continue;
-    if (line.length < 2 || line.length > 80) continue;
-    productName = line;
-    break;
-  }
-  if (!brand && lines[0] && lines[0].length <= 25 && !skipPattern.test(lines[0])) {
+  if (!brand && lines[0] && lines[0].length <= 25 && !SKIP_LINE.test(lines[0])) {
     brand = lines[0];
-    if (lines[1] && !skipPattern.test(lines[1]) && !productName) {
-      productName = lines[1];
+  }
+  let productName = inferProductName(lines, brand);
+  const skipPattern = /^(ingredienti|ingredients|allergeni|netto|peso|e\s*an|lotto|scadenza|barcode|codice)/i;
+  if (!productName) {
+    for (const line of lines.slice(0, 8)) {
+      if (skipPattern.test(line)) continue;
+      if (/^\d+$/.test(line)) continue;
+      if (isBrandLine(line, brand)) continue;
+      if (line.length < 2 || line.length > 80) continue;
+      productName = line;
+      break;
     }
   }
   const idx = lines.findIndex((l) => /^ingredienti/i.test(l));
-  if (!productName && idx > 0) productName = lines[idx - 1];
-  return { barcode, productName, brand };
+  if (!productName && idx > 0) {
+    const candidate = lines[idx - 1];
+    if (candidate && !isBrandLine(candidate, brand)) productName = candidate;
+  }
+  return {
+    barcode: sanitizeBarcode(barcode),
+    productName,
+    brand
+  };
 }
 
 // server/core/evidenceBuilder.ts
@@ -414,35 +598,65 @@ async function appendSerpApi(sources, query, barcode) {
 async function buildProductEvidence(input) {
   const sources = [];
   let offProduct = null;
-  const ocrHints = input.ocr?.rawText ? inferHintsFromRawText(input.ocr.rawText) : {};
-  let barcode = input.barcode?.trim() || input.ocr?.barcode || ocrHints.barcode;
+  const ocrRawText = input.ocr?.rawText;
+  const ocrHints = ocrRawText ? inferHintsFromRawText(ocrRawText) : {};
+  let barcode = sanitizeBarcode(
+    input.barcode?.trim() || input.ocr?.barcode || ocrHints.barcode
+  );
   let searchMethod = "none";
   let searchQuery;
   const nameQuery = input.productName?.trim() || input.ocr?.productName?.trim() || input.productVision?.productName?.trim() || ocrHints.productName?.trim() || void 0;
   const brandQuery = input.brand?.trim() || input.ocr?.brand?.trim() || input.productVision?.brand?.trim() || ocrHints.brand?.trim();
+  function rejectDatabaseMatch(rejected, rejectedBarcode, via, query) {
+    sources.push(
+      source("open_facts_rejected", "Open Facts (identit\xE0 non concorde)", "empty", {
+        via,
+        query,
+        attemptedProduct: rejected.product_name,
+        attemptedBarcode: rejectedBarcode,
+        note: "Il prodotto trovato in banca dati non corrisponde al testo OCR dell'etichetta. Vengono mostrati solo i dati letti dall'etichetta."
+      })
+    );
+    offProduct = null;
+    barcode = void 0;
+    searchMethod = "ocr_only";
+  }
   if (!barcode && nameQuery) {
     searchQuery = brandQuery ? `${brandQuery} ${nameQuery}` : nameQuery;
     const { result: nameHit, ms } = await timed(
-      () => searchProductByName(nameQuery, brandQuery)
+      () => searchProductByName(nameQuery, { brand: brandQuery, ocrText: ocrRawText })
     );
     if (nameHit) {
-      barcode = nameHit.barcode;
-      offProduct = nameHit.product;
-      searchMethod = "name";
-      sources.push(
-        source(
-          "open_facts_search",
-          "Open Facts (ricerca nome)",
-          "ok",
-          {
-            query: searchQuery,
-            matched: nameHit.product.product_name,
-            barcode: nameHit.barcode,
-            database: nameHit.product.source_database
-          },
-          ms
-        )
-      );
+      if (ocrRawText && isOcrDatabaseMismatch(ocrRawText, nameHit.product, brandQuery)) {
+        rejectDatabaseMatch(nameHit.product, nameHit.barcode, "name", searchQuery);
+        sources.push(
+          source(
+            "open_facts_search",
+            "Open Facts (ricerca nome)",
+            "empty",
+            { query: searchQuery, rejected: nameHit.product.product_name },
+            ms
+          )
+        );
+      } else {
+        barcode = nameHit.barcode;
+        offProduct = nameHit.product;
+        searchMethod = "name";
+        sources.push(
+          source(
+            "open_facts_search",
+            "Open Facts (ricerca nome)",
+            "ok",
+            {
+              query: searchQuery,
+              matched: nameHit.product.product_name,
+              barcode: nameHit.barcode,
+              database: nameHit.product.source_database
+            },
+            ms
+          )
+        );
+      }
     } else {
       sources.push(
         source(
@@ -461,15 +675,31 @@ async function buildProductEvidence(input) {
       const { result, ms } = await timed(() => fetchUniversalProduct(barcode));
       offProduct = result;
       if (result?.product_name || result?.brands) {
-        sources.push(
-          source(
-            result.source_database,
-            result.source_database.replace(/_/g, " "),
-            "ok",
-            result,
-            ms
-          )
-        );
+        if (ocrRawText && isOcrDatabaseMismatch(ocrRawText, result, brandQuery)) {
+          rejectDatabaseMatch(result, barcode, "barcode", searchQuery);
+          sources.push(
+            source(
+              result.source_database,
+              result.source_database.replace(/_/g, " "),
+              "empty",
+              {
+                rejected: result.product_name,
+                barcode
+              },
+              ms
+            )
+          );
+        } else {
+          sources.push(
+            source(
+              result.source_database,
+              result.source_database.replace(/_/g, " "),
+              "ok",
+              result,
+              ms
+            )
+          );
+        }
       } else {
         sources.push(
           source("open_facts", "Open Facts (universale)", "empty", {}, ms)
@@ -485,29 +715,47 @@ async function buildProductEvidence(input) {
         )
       );
     }
-    const gs1 = await appendGs1(sources, barcode);
-    const certs = extractCertifications(offProduct);
-    const certList2 = certs.certifications;
-    sources.push(
-      source(
-        "certifications_db",
-        "Certificazioni",
-        certList2.length ? "ok" : "empty",
-        certs
-      )
-    );
-    const { result: customs, ms: customsMs } = await timed(
-      () => lookupCustoms(offProduct, barcode)
-    );
-    sources.push(
-      source(
-        "customs_un_comtrade",
-        "Dogana / Comtrade",
-        customs.hs_code || customs.last_import_country ? "ok" : "empty",
-        customs,
-        customsMs
-      )
-    );
+    if (!offProduct) {
+      sources.push(
+        source("gs1", "GS1 / Barcode lookup", "skipped", {
+          note: "Match banca dati non coerente con OCR"
+        })
+      );
+      sources.push(
+        source("certifications_db", "Certificazioni", "skipped", {
+          note: "Richiede prodotto trovato su Open Facts"
+        })
+      );
+      sources.push(
+        source("customs_un_comtrade", "Dogana / Comtrade", "skipped", {
+          note: "Richiede prodotto trovato su Open Facts"
+        })
+      );
+    } else {
+      await appendGs1(sources, barcode);
+      const certs = extractCertifications(offProduct);
+      const certList2 = certs.certifications;
+      sources.push(
+        source(
+          "certifications_db",
+          "Certificazioni",
+          certList2.length ? "ok" : "empty",
+          certs
+        )
+      );
+      const { result: customs, ms: customsMs } = await timed(
+        () => lookupCustoms(offProduct, barcode)
+      );
+      sources.push(
+        source(
+          "customs_un_comtrade",
+          "Dogana / Comtrade",
+          customs.hs_code || customs.last_import_country ? "ok" : "empty",
+          customs,
+          customsMs
+        )
+      );
+    }
   } else if ((input.ocr || nameQuery) && !barcode) {
     searchMethod = "ocr_only";
     const nameSearchDone = sources.some((s) => s.source === "open_facts_search");
@@ -577,7 +825,7 @@ async function buildProductEvidence(input) {
       name: offProduct?.product_name ?? input.ocr?.productName ?? input.productVision?.productName ?? gs1Data?.product_description,
       brand: offProduct?.brands ?? input.ocr?.brand ?? input.productVision?.brand ?? gs1Data?.company_name,
       category: offProduct?.categories ?? input.productVision?.category,
-      imageUrl: offProduct?.image_url
+      imageUrl: normalizeProductImageUrl(offProduct?.image_url)
     },
     composition: {
       ingredients: offProduct?.ingredients_text ?? input.ocr?.ingredients
@@ -588,8 +836,17 @@ async function buildProductEvidence(input) {
         ...splitList(offProduct?.origins),
         ...input.ocr?.originClaims ?? []
       ],
-      manufacturing: splitList(offProduct?.manufacturing_places)
+      manufacturing: splitList(offProduct?.manufacturing_places),
+      purchasePlaces: splitList(offProduct?.purchase_places)
     },
+    meta: offProduct ? {
+      sourceDatabase: offProduct.source_database,
+      traceabilityCodes: splitList(offProduct.emb_codes),
+      labels: [
+        ...splitList(offProduct.labels),
+        ...offProduct.labels_tags?.map((t) => t.replace(/^[^:]+:\s*/, "")) ?? []
+      ].filter((v, i, arr) => arr.indexOf(v) === i)
+    } : input.ocr?.labelClaims?.length ? { traceabilityCodes: [], labels: input.ocr.labelClaims } : void 0,
     certifications: [...certList, ...ocrCerts],
     customs: customsData ? {
       hsCode: customsData.hs_code,
@@ -1120,14 +1377,21 @@ async function checkDatabasesReachability() {
 }
 
 // server/routes/api.ts
+var VERCEL_MAX_FILE_BYTES = 900 * 1024;
 var upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 12 * 1024 * 1024 }
+  limits: { fileSize: VERCEL_MAX_FILE_BYTES }
 });
 var analyzeUpload = upload.fields([
   { name: "image", maxCount: 1 },
   { name: "productImages", maxCount: maxProductImages }
 ]);
+var productVisionUpload = upload.array("productImages", maxProductImages);
+async function runAnalysis(input) {
+  const evidence = await buildProductEvidence(input);
+  const analysis = await analyzeWithAi(evidence);
+  return { evidence, analysis };
+}
 var apiRouter = express.Router();
 apiRouter.get("/health", async (_req, res) => {
   try {
@@ -1163,6 +1427,43 @@ apiRouter.get("/databases/status", async (_req, res) => {
     res.status(503).json({ error: message });
   }
 });
+function multerErrorMessage(err) {
+  if (err && typeof err === "object" && "code" in err && err.code === "LIMIT_FILE_SIZE") {
+    return "Immagine troppo grande (max ~900KB). Riduci la foto e riprova.";
+  }
+  return err instanceof Error ? err.message : "Errore upload";
+}
+apiRouter.post("/product/vision", productVisionUpload, async (req, res) => {
+  try {
+    const files = req.files;
+    if (!files?.length) {
+      res.status(400).json({ error: "Almeno una foto prodotto richiesta (productImages)" });
+      return;
+    }
+    const productVision = await describeProductFromImages(
+      files.map((f) => ({ buffer: f.buffer, mimeType: f.mimetype }))
+    );
+    res.json({ success: true, productVision });
+  } catch (err) {
+    res.status(503).json({ success: false, error: multerErrorMessage(err) });
+  }
+});
+apiRouter.post("/analyze/json", async (req, res) => {
+  try {
+    const body = req.body;
+    const response = await runAnalysis({
+      ocr: body.ocr,
+      productVision: body.productVision,
+      barcode: body.barcode?.trim() || body.ocr?.barcode,
+      productName: body.productName?.trim() || body.ocr?.productName || body.productVision?.productName,
+      brand: body.brand?.trim() || body.ocr?.brand || body.productVision?.brand
+    });
+    res.json(response);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Errore analisi";
+    res.status(500).json({ error: message });
+  }
+});
 apiRouter.post("/ocr/label", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) {
@@ -1172,12 +1473,32 @@ apiRouter.post("/ocr/label", upload.single("image"), async (req, res) => {
     const ocr = await extractTextFromImage(req.file.buffer, req.file.mimetype);
     res.json({ success: true, ocr });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Errore OCR";
-    res.status(503).json({
+    const message = multerErrorMessage(err);
+    res.status(message.includes("troppo grande") ? 413 : 503).json({
       success: false,
       error: message,
       hint: "Verifica token/product_id e INFOMANIAK_VISION_MODEL (es. mistralai/Ministral-3-14B-Instruct-2512)"
     });
+  }
+});
+apiRouter.get("/image/proxy", async (req, res) => {
+  const rawUrl = String(req.query.url ?? "").trim();
+  const url = normalizeProductImageUrl(rawUrl);
+  if (!url || !isAllowedProductImageUrl(url)) {
+    res.status(400).json({ error: "URL immagine non valido o non consentito" });
+    return;
+  }
+  try {
+    const result = await fetchProductImage(url);
+    if (!result.ok) {
+      res.status(result.status === 403 ? 404 : result.status).end();
+      return;
+    }
+    res.setHeader("Content-Type", result.contentType);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(result.buffer);
+  } catch {
+    res.status(502).json({ error: "Impossibile recuperare l'immagine" });
   }
 });
 apiRouter.post("/analyze", analyzeUpload, async (req, res) => {
@@ -1208,18 +1529,16 @@ apiRouter.post("/analyze", analyzeUpload, async (req, res) => {
         productFiles.map((f) => ({ buffer: f.buffer, mimeType: f.mimetype }))
       );
     }
-    const evidence = await buildProductEvidence({
+    const response = await runAnalysis({
       barcode,
       ocr,
       productVision,
       productName: req.body.productName ? String(req.body.productName) : ocr?.productName ?? productVision?.productName,
       brand: req.body.brand ? String(req.body.brand) : ocr?.brand ?? productVision?.brand
     });
-    const analysis = await analyzeWithAi(evidence);
-    const response = { evidence, analysis };
     res.json(response);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Errore analisi";
+    const message = multerErrorMessage(err);
     res.status(500).json({ error: message });
   }
 });
@@ -1230,9 +1549,8 @@ apiRouter.post("/analyze/barcode", async (req, res) => {
       res.status(400).json({ error: "Barcode mancante" });
       return;
     }
-    const evidence = await buildProductEvidence({ barcode });
-    const analysis = await analyzeWithAi(evidence);
-    res.json({ evidence, analysis });
+    const response = await runAnalysis({ barcode });
+    res.json(response);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Errore analisi";
     res.status(500).json({ error: message });

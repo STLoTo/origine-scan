@@ -1,4 +1,5 @@
 import { fetchJson } from "./http";
+import { scoreProductAgainstOcr } from "./productMatch";
 
 const OFF_FIELDS = [
   "product_name",
@@ -125,11 +126,24 @@ interface LegacySearchResponse {
   products?: Array<{ code?: string; product_name?: string; brands?: string }>;
 }
 
+interface NameSearchOptions {
+  brand?: string;
+  /** Testo OCR completo per scegliere il match più coerente */
+  ocrText?: string;
+}
+
 /** Ricerca per nome/marca su Open Facts (fallback se manca barcode) */
 export async function searchProductByName(
   name: string,
-  brand?: string,
+  brandOrOptions?: string | NameSearchOptions,
+  legacyBrand?: string,
 ): Promise<{ product: FlatOpenProduct; barcode: string } | null> {
+  const options: NameSearchOptions =
+    typeof brandOrOptions === "string"
+      ? { brand: brandOrOptions ?? legacyBrand }
+      : (brandOrOptions ?? { brand: legacyBrand });
+
+  const brand = options.brand;
   const query = [brand, name].filter(Boolean).join(" ").trim();
   if (query.length < 2) return null;
 
@@ -139,20 +153,36 @@ export async function searchProductByName(
     { base: "https://world.openproductsfacts.org", label: "open_products_facts" },
   ] as const;
 
+  let best: { product: FlatOpenProduct; barcode: string; score: number } | null = null;
+
   for (const source of bases) {
     const url =
       `${source.base}/cgi/search.pl?search_terms=${encodeURIComponent(query)}` +
-      `&search_simple=1&action=process&json=1&page_size=1`;
+      `&search_simple=1&action=process&json=1&page_size=5`;
 
     const result = await fetchJson<LegacySearchResponse>(url);
-    const hit = result.data?.products?.[0];
-    if (!hit?.code) continue;
+    const hits = result.data?.products ?? [];
 
-    const full = await fetchFromBase(source.base, source.label, hit.code);
-    if (full?.product_name || full?.brands) {
-      return { product: full, barcode: hit.code };
+    for (const hit of hits) {
+      if (!hit?.code) continue;
+
+      const full = await fetchFromBase(source.base, source.label, hit.code);
+      if (!full?.product_name && !full?.brands) continue;
+
+      const score = options.ocrText
+        ? scoreProductAgainstOcr(options.ocrText, full, brand)
+        : 0.5;
+
+      if (!best || score > best.score) {
+        best = { product: full, barcode: hit.code, score };
+      }
     }
+
+    if (best && best.score >= 0.2) break;
   }
 
-  return null;
+  if (!best) return null;
+  if (options.ocrText && best.score < 0.15) return null;
+
+  return { product: best.product, barcode: best.barcode };
 }

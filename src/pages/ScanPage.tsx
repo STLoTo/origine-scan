@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   analyzeBarcode,
   analyzeFromOcr,
-  analyzeImage,
+  assertUploadBudget,
   fetchDatabasesStatus,
   fetchHealth,
   lampsForAnalyzeStep,
   MAX_PRODUCT_PHOTOS,
   mergeLampsFromEvidence,
   ocrLabel,
+  runFullAnalysis,
 } from "../api/client";
 import { defaultDatabaseLamps } from "../lib/databaseCatalog";
 import { resizeImageForOcr } from "../lib/resizeImage";
@@ -140,14 +141,16 @@ export function ScanPage() {
     setDbLamps(lampsForAnalyzeStep());
     try {
       let response: AnalyzeResponse;
+      const toUpload = file ? [file] : [];
       const productFiles = await Promise.all(productPhotos.map((p) => resizeImageForOcr(p.file)));
+      assertUploadBudget([...toUpload, ...productFiles]);
 
       if (file || productFiles.length) {
-        response = await analyzeImage(file, {
+        response = await runFullAnalysis({
+          labelFile: file,
+          productFiles,
+          ocr,
           barcode: barcode.trim() || ocr?.barcode,
-          productName: ocr?.productName,
-          brand: ocr?.brand,
-          productImages: productFiles,
         });
         setOcr(response.evidence.ocr ?? null);
         if (response.evidence.barcode) setBarcode(response.evidence.barcode);
