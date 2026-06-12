@@ -1,5 +1,13 @@
 import { DATABASE_CATALOG, type DatabaseMeta } from "./databaseCatalog";
 
+/** Testo introduttivo breve — sempre visibile nella card banche dati */
+export const DATABASE_INTRO_SHORT =
+  "OrigineScan non usa un database locale: a ogni analisi interroga fonti pubbliche e servizi esterni in tempo reale, poi unisce i risultati in un unico profilo prodotto per la sintesi AI.";
+
+/** Testo introduttivo esteso — visibile aprendo la guida */
+export const DATABASE_INTRO =
+  "Le «banche dati» sono API e archivi open che contengono informazioni su prodotti, barcode, certificazioni e commercio. OrigineScan le consulta in parallelo: più codici e campi hai (EAN, nome, marca), più fonti possono rispondere. Le icone colorate sopra indicano lo stato di ogni collegamento — verde significa online o dati ricevuti, ambra che la fonte è stata interrogata ma non ha trovato nulla, grigio che è stata saltata (es. manca l'EAN), il tratteggio che serve una chiave API in .env.";
+
 export interface DatabaseInfoEntry extends DatabaseMeta {
   /** Breve descrizione della fonte */
   summary: string;

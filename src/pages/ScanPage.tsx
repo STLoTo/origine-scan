@@ -16,6 +16,7 @@ import { Card } from "../components/Card";
 import { DatabaseInfoPanel } from "../components/DatabaseInfoPanel";
 import { DatabaseStatusGrid } from "../components/DatabaseStatusGrid";
 import { ResultsPanel } from "../components/ResultsPanel";
+import { DATABASE_INTRO_SHORT } from "../lib/databaseInfo";
 
 type Step = "idle" | "ocr" | "analyze" | "done" | "error";
 
@@ -173,11 +174,7 @@ export function ScanPage() {
       </header>
 
       <Card title="Banche dati — stato collegamento" className="mb-6">
-        <p className="mb-3 text-xs text-slate-500">
-          Verde = online/dati ricevuti · Ambra = interrogata ma vuota · Grigio = saltata ·
-          Trattino = non configurata. Open Facts accetta <strong className="text-slate-400">EAN e nome</strong>;
-          GS1, certificazioni e dogana solo <strong className="text-slate-400">EAN</strong>.
-        </p>
+        <p className="mb-4 text-sm leading-relaxed text-slate-400">{DATABASE_INTRO_SHORT}</p>
         <DatabaseStatusGrid lamps={dbLamps} />
         <DatabaseInfoPanel />
       </Card>

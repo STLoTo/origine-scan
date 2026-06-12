@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DATABASE_INFO, formatSearchBy } from "../lib/databaseInfo";
+import { DATABASE_INFO, DATABASE_INTRO, formatSearchBy } from "../lib/databaseInfo";
 import { LAMP_STYLE, type DatabaseLampStatus } from "../lib/databaseCatalog";
 
 const LAMP_LEGEND: DatabaseLampStatus[] = [
@@ -34,6 +34,11 @@ export function DatabaseInfoPanel() {
 
       {open && (
         <div className="mt-3 space-y-4">
+          <section className="rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-sm leading-relaxed text-slate-400">
+            <p className="font-medium text-slate-300">Introduzione</p>
+            <p className="mt-2">{DATABASE_INTRO}</p>
+          </section>
+
           <section className="rounded-xl bg-slate-950/80 p-3 text-xs leading-relaxed text-slate-400">
             <p className="font-medium text-slate-300">Flusso analisi</p>
             <ol className="mt-2 list-decimal space-y-1 pl-4">
